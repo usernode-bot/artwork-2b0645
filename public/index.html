@@ -69,7 +69,7 @@
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    #drawing-canvas { cursor: crosshair; display: block; background: #1e1e2e; }
+    #drawing-canvas { cursor: crosshair; display: block; background: #ffffff; }
     #drawing-canvas.frozen { cursor: not-allowed; }
     .tool-btn { transition: all 0.15s; }
     .tool-btn.active { background: #7c3aed !important; color: white; }
@@ -77,12 +77,51 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #18181b; }
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+    #session-view {
+      position: fixed;
+      top: 48px; left: 0; right: 0; bottom: 0;
+      z-index: 15;
+      background: #09090b;
+      flex-direction: column;
+    }
+    #canvas-stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+      min-height: 0;
+    }
+    #drawing-canvas {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+    }
+    #tool-bar {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      white-space: nowrap;
+    }
+    #auction-panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      bottom: 12px;
+      width: 240px;
+      z-index: 10;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
 
   <!-- Header -->
-  <header class="sticky top-0 z-20 bg-zinc-900 border-b border-zinc-800 px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+  <header id="app-header" class="sticky top-0 z-20 bg-zinc-900 border-b border-zinc-800 px-4 flex items-center justify-between gap-4" style="height:48px;flex-shrink:0">
     <h1 class="text-base font-bold tracking-tight">🎨 Artwork Workspace</h1>
     <div class="flex items-center gap-3">
       <span id="credit-display" class="text-sm font-mono text-violet-300 bg-violet-950/50 px-2.5 py-1 rounded-full">💎 --</span>
@@ -103,43 +142,34 @@
       <p class="text-sm">Create a new session to start drawing together.</p>
     </div>
 
-    <!-- Active / Auction session -->
-    <div id="session-view" class="hidden flex-col gap-3">
-      <!-- Session info bar -->
-      <div class="flex items-center gap-3 flex-wrap">
-        <span class="font-semibold text-white" id="sv-name"></span>
-        <span class="text-zinc-500 text-sm">by <span class="text-zinc-300" id="sv-creator"></span></span>
-        <span id="sv-badge" class="text-xs px-2.5 py-0.5 rounded-full font-medium"></span>
-        <span id="sv-frozen-msg" class="hidden text-xs text-amber-400 bg-amber-900/30 px-2.5 py-0.5 rounded-full">Canvas frozen during auction</span>
+    <!-- Active / Auction session (full-screen fixed overlay) -->
+    <div id="session-view" style="display:none">
+      <!-- Compact info strip -->
+      <div class="flex-shrink-0 flex items-center gap-2 px-3 bg-zinc-900 border-b border-zinc-800" style="height:34px">
+        <span class="font-semibold text-white text-sm truncate max-w-xs" id="sv-name"></span>
+        <span class="text-zinc-500 text-xs flex-shrink-0">by <span class="text-zinc-300" id="sv-creator"></span></span>
+        <span id="sv-badge" class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"></span>
+        <span id="sv-frozen-msg" class="hidden text-xs text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded-full flex-shrink-0">🔒 Frozen</span>
       </div>
 
-      <!-- Canvas + panel -->
-      <div class="flex gap-4 items-start flex-wrap lg:flex-nowrap">
-        <!-- Canvas column -->
-        <div class="flex-1 min-w-0">
-          <!-- Tools -->
-          <div id="tool-bar" class="flex items-center gap-2 mb-2 flex-wrap">
-            <label class="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer">
-              <input type="color" id="color-picker" value="#ffffff"
-                class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent p-0" style="appearance:none">
-              Color
-            </label>
-            <label class="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer">
-              <input type="range" id="size-slider" min="1" max="40" value="6" class="w-20 accent-violet-500">
-              <span id="size-label">6px</span>
-            </label>
-            <button id="draw-btn" class="tool-btn active px-2.5 py-1 text-xs rounded-md bg-zinc-700 text-zinc-200">Draw</button>
-            <button id="eraser-btn" class="tool-btn px-2.5 py-1 text-xs rounded-md bg-zinc-700 text-zinc-200">Eraser</button>
-            <button id="clear-btn" class="hidden px-2.5 py-1 text-xs rounded-md bg-red-900 hover:bg-red-800 text-red-200 transition-colors">Clear Canvas</button>
-          </div>
-          <!-- Canvas wrapper -->
-          <div class="rounded-lg overflow-hidden border border-zinc-700 bg-[#1e1e2e]" style="line-height:0">
-            <canvas id="drawing-canvas" width="800" height="560" style="max-width:100%;height:auto"></canvas>
-          </div>
+      <!-- Canvas stage fills rest -->
+      <div id="canvas-stage">
+        <canvas id="drawing-canvas" width="800" height="560"></canvas>
+
+        <!-- Floating tool bar (bottom-center) -->
+        <div id="tool-bar" class="flex items-center gap-2 bg-zinc-900/95 backdrop-blur border border-zinc-700 rounded-2xl px-4 py-2 shadow-2xl">
+          <input type="color" id="color-picker" value="#000000" title="Color"
+            class="w-7 h-7 rounded-lg cursor-pointer border border-zinc-600 p-0.5 bg-zinc-800" style="appearance:none">
+          <input type="range" id="size-slider" min="1" max="40" value="6" class="w-20 accent-violet-500" title="Brush size">
+          <span id="size-label" class="text-xs text-zinc-400 w-7 text-center">6</span>
+          <div class="w-px h-5 bg-zinc-700 mx-0.5"></div>
+          <button id="draw-btn" class="tool-btn active px-2.5 py-1 text-xs rounded-lg bg-zinc-700 text-zinc-200">Draw</button>
+          <button id="eraser-btn" class="tool-btn px-2.5 py-1 text-xs rounded-lg bg-zinc-700 text-zinc-200">Eraser</button>
+          <button id="clear-btn" class="hidden px-2.5 py-1 text-xs rounded-lg bg-red-900/80 hover:bg-red-800 text-red-200 transition-colors">Clear</button>
         </div>
 
-        <!-- Auction panel -->
-        <div id="auction-panel" class="w-full lg:w-64 flex-shrink-0 bg-zinc-900 rounded-xl border border-zinc-800 p-4 flex flex-col gap-3">
+        <!-- Floating auction panel (right side) -->
+        <div id="auction-panel" class="bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl shadow-2xl p-4 flex flex-col gap-3">
           <!-- filled by renderAuctionPanel() -->
         </div>
       </div>
@@ -159,7 +189,7 @@
           <div>
             <p class="text-xs text-zinc-500 mb-2">Original Drawing</p>
             <div class="bg-zinc-800 rounded-lg overflow-hidden aspect-square flex items-center justify-center">
-              <canvas id="locked-canvas-thumb" width="200" height="140" class="max-w-full max-h-full" style="background:#1e1e2e"></canvas>
+              <canvas id="locked-canvas-thumb" width="200" height="140" class="max-w-full max-h-full" style="background:#ffffff"></canvas>
             </div>
           </div>
           <div>
@@ -203,7 +233,7 @@ const params = new URLSearchParams(location.search);
 const token = params.get('token') || '';
 const hdrs = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
 
-const CANVAS_BG = '#1e1e2e';
+const CANVAS_BG = '#ffffff';
 const CANVAS_W = 800;
 const CANVAS_H = 560;
 
@@ -213,7 +243,7 @@ let auctionEnded = false;
 let lockedSessionData = null; // last locked session for locked-view
 
 let tool = 'draw';
-let brushColor = '#ffffff';
+let brushColor = '#000000';
 let brushSize = 6;
 let isDrawing = false;
 let currentPoints = [];
@@ -356,8 +386,7 @@ function renderMain() {
   const lockView = document.getElementById('locked-view');
 
   noView.classList.add('hidden');
-  sessView.classList.add('hidden');
-  sessView.classList.remove('flex');
+  sessView.style.display = 'none';
   lockView.classList.add('hidden');
 
   if (!activeSession) {
@@ -371,8 +400,7 @@ function renderMain() {
   }
 
   if (activeSession.state === 'active' || activeSession.state === 'auction') {
-    sessView.classList.remove('hidden');
-    sessView.classList.add('flex');
+    sessView.style.display = 'flex';
 
     document.getElementById('sv-name').textContent = activeSession.name;
     document.getElementById('sv-creator').textContent = `@${activeSession.creator_username}`;
@@ -691,7 +719,7 @@ function initToolbar() {
   });
   document.getElementById('size-slider').addEventListener('input', e => {
     brushSize = parseInt(e.target.value);
-    document.getElementById('size-label').textContent = `${brushSize}px`;
+    document.getElementById('size-label').textContent = brushSize;
   });
   document.getElementById('clear-btn').addEventListener('click', () => {
     if (!activeSession || activeSession.state !== 'active') return;
