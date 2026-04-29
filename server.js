@@ -354,6 +354,19 @@ io.on('connection', (socket) => {
       console.error('clear-canvas error:', err);
     }
   });
+
+  socket.on('canvas-snapshot', async ({ sessionId, dataUrl }) => {
+    try {
+      await pool.query('DELETE FROM canvas_strokes WHERE session_id = $1', [sessionId]);
+      await pool.query(
+        `INSERT INTO canvas_strokes (session_id, user_id, username, stroke_data) VALUES ($1,$2,$3,$4)`,
+        [sessionId, socket.user.id, socket.user.username, JSON.stringify({ type: 'snapshot', dataUrl })]
+      );
+      socket.to(`session:${sessionId}`).emit('canvas-snapshot', { dataUrl });
+    } catch (err) {
+      console.error('canvas-snapshot error:', err);
+    }
+  });
 });
 
 // ─── Static + HTML shell ──────────────────────────────────────────────────────
