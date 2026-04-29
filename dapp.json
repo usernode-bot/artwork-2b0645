@@ -1,0 +1,10 @@
+{
+  "secrets": [
+    {
+      "key": "REPLICATE_API_KEY",
+      "description": "Replicate API key for AI image generation (wired up later to replace stub)",
+      "required": false,
+      "sensitive": true
+    }
+  ]
+}

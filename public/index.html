@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
+
   <script>
   // usernode-dev-console@1
   (function () {
@@ -63,59 +63,729 @@
     try { post('info', ['[dev-console ready]'], { kind: 'ready' }); } catch (_) {}
   })();
   </script>
-  <title>artwork</title>
+
+  <title>Artwork Workspace</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    #drawing-canvas { cursor: crosshair; display: block; background: #1e1e2e; }
+    #drawing-canvas.frozen { cursor: not-allowed; }
+    .tool-btn { transition: all 0.15s; }
+    .tool-btn.active { background: #7c3aed !important; color: white; }
+    #countdown-ring { transition: stroke-dashoffset 1s linear; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #18181b; }
+    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+  </style>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4">
-  <h1 class="text-2xl font-bold">artwork</h1>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
 
-  <button id="press-btn" class="w-32 h-32 rounded-full bg-violet-600 hover:bg-violet-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-violet-600/30">
-    Press!
-  </button>
+  <!-- Header -->
+  <header class="sticky top-0 z-20 bg-zinc-900 border-b border-zinc-800 px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+    <h1 class="text-base font-bold tracking-tight">🎨 Artwork Workspace</h1>
+    <div class="flex items-center gap-3">
+      <span id="credit-display" class="text-sm font-mono text-violet-300 bg-violet-950/50 px-2.5 py-1 rounded-full">💎 --</span>
+      <span id="username-display" class="text-sm text-zinc-400"></span>
+      <button id="new-session-btn"
+        class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors"
+        disabled>+ New Session</button>
+    </div>
+  </header>
 
-  <div id="count" class="text-lg text-zinc-400">0 total presses</div>
+  <!-- Main -->
+  <div class="flex-1 p-4 flex flex-col gap-4">
 
-  <div class="w-full max-w-sm">
-    <h2 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h2>
-    <div id="leaderboard" class="space-y-1"></div>
+    <!-- No active session -->
+    <div id="no-session-view" class="flex flex-col items-center justify-center py-20 text-zinc-600">
+      <div class="text-5xl mb-4">🖼️</div>
+      <p class="text-lg font-medium text-zinc-400 mb-1">No active session</p>
+      <p class="text-sm">Create a new session to start drawing together.</p>
+    </div>
+
+    <!-- Active / Auction session -->
+    <div id="session-view" class="hidden flex-col gap-3">
+      <!-- Session info bar -->
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="font-semibold text-white" id="sv-name"></span>
+        <span class="text-zinc-500 text-sm">by <span class="text-zinc-300" id="sv-creator"></span></span>
+        <span id="sv-badge" class="text-xs px-2.5 py-0.5 rounded-full font-medium"></span>
+        <span id="sv-frozen-msg" class="hidden text-xs text-amber-400 bg-amber-900/30 px-2.5 py-0.5 rounded-full">Canvas frozen during auction</span>
+      </div>
+
+      <!-- Canvas + panel -->
+      <div class="flex gap-4 items-start flex-wrap lg:flex-nowrap">
+        <!-- Canvas column -->
+        <div class="flex-1 min-w-0">
+          <!-- Tools -->
+          <div id="tool-bar" class="flex items-center gap-2 mb-2 flex-wrap">
+            <label class="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer">
+              <input type="color" id="color-picker" value="#ffffff"
+                class="w-7 h-7 rounded cursor-pointer border-0 bg-transparent p-0" style="appearance:none">
+              Color
+            </label>
+            <label class="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer">
+              <input type="range" id="size-slider" min="1" max="40" value="6" class="w-20 accent-violet-500">
+              <span id="size-label">6px</span>
+            </label>
+            <button id="draw-btn" class="tool-btn active px-2.5 py-1 text-xs rounded-md bg-zinc-700 text-zinc-200">Draw</button>
+            <button id="eraser-btn" class="tool-btn px-2.5 py-1 text-xs rounded-md bg-zinc-700 text-zinc-200">Eraser</button>
+            <button id="clear-btn" class="hidden px-2.5 py-1 text-xs rounded-md bg-red-900 hover:bg-red-800 text-red-200 transition-colors">Clear Canvas</button>
+          </div>
+          <!-- Canvas wrapper -->
+          <div class="rounded-lg overflow-hidden border border-zinc-700 bg-[#1e1e2e]" style="line-height:0">
+            <canvas id="drawing-canvas" width="800" height="560" style="max-width:100%;height:auto"></canvas>
+          </div>
+        </div>
+
+        <!-- Auction panel -->
+        <div id="auction-panel" class="w-full lg:w-64 flex-shrink-0 bg-zinc-900 rounded-xl border border-zinc-800 p-4 flex flex-col gap-3">
+          <!-- filled by renderAuctionPanel() -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Locked session (just generated) -->
+    <div id="locked-view" class="hidden">
+      <div class="bg-zinc-900 rounded-xl border border-zinc-800 p-5">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="text-2xl">🔒</span>
+          <div>
+            <p class="font-semibold text-white" id="lv-name"></p>
+            <p class="text-xs text-zinc-500">Session locked · artwork generated</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <p class="text-xs text-zinc-500 mb-2">Original Drawing</p>
+            <div class="bg-zinc-800 rounded-lg overflow-hidden aspect-square flex items-center justify-center">
+              <canvas id="locked-canvas-thumb" width="200" height="140" class="max-w-full max-h-full" style="background:#1e1e2e"></canvas>
+            </div>
+          </div>
+          <div>
+            <p class="text-xs text-zinc-500 mb-2">Generated Artwork</p>
+            <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-lg aspect-square object-cover bg-zinc-800">
+          </div>
+        </div>
+        <p class="mt-3 text-xs text-zinc-500 italic" id="lv-prompt"></p>
+        <p class="text-xs text-zinc-600 mt-1" id="lv-winner"></p>
+      </div>
+    </div>
+
   </div>
 
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('token') || '';
-    const headers = token ? { 'x-usernode-token': token } : {};
+  <!-- Archive -->
+  <div class="px-4 pb-8">
+    <h2 class="text-xs font-semibold text-zinc-600 uppercase tracking-wider mb-3">Session Archive</h2>
+    <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
+    </div>
+  </div>
 
-    async function loadLeaderboard() {
-      const res = await fetch('/api/leaderboard', { headers });
-      if (!res.ok) return;
-      const { leaderboard } = await res.json();
-      const el = document.getElementById('leaderboard');
-      if (!leaderboard.length) {
-        el.innerHTML = '<p class="text-center text-zinc-600 text-sm">No presses yet</p>';
-        return;
-      }
-      el.innerHTML = leaderboard.map((r, i) =>
-        '<div class="flex justify-between px-3 py-1 rounded ' + (i === 0 ? 'bg-violet-600/20 text-violet-300' : 'text-zinc-400') + '">' +
-        '<span>' + (i + 1) + '. ' + r.username + '</span>' +
-        '<span class="font-mono">' + r.presses + '</span></div>'
-      ).join('');
-      const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
-      document.getElementById('count').textContent = total + ' total presses';
+  <!-- New Session Modal -->
+  <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+      <h2 class="text-lg font-semibold mb-1">New Session</h2>
+      <p class="text-sm text-zinc-500 mb-4">Give your collaborative drawing session a name.</p>
+      <input id="modal-name" type="text" placeholder="e.g. Sunset Vibes, Space Battle..." maxlength="80"
+        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-4 outline-none transition-colors">
+      <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
+      <div class="flex gap-2">
+        <button id="modal-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
+        <button id="modal-create" class="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors">Create</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const token = params.get('token') || '';
+const hdrs = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
+
+const CANVAS_BG = '#1e1e2e';
+const CANVAS_W = 800;
+const CANVAS_H = 560;
+
+let me = null;
+let activeSession = null;
+let auctionEnded = false;
+let lockedSessionData = null; // last locked session for locked-view
+
+let tool = 'draw';
+let brushColor = '#ffffff';
+let brushSize = 6;
+let isDrawing = false;
+let currentPoints = [];
+
+let canvas, ctx;
+let socket;
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: hdrs() };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+// ─── Canvas ───────────────────────────────────────────────────────────────────
+function initCanvas() {
+  canvas = document.getElementById('drawing-canvas');
+  ctx = canvas.getContext('2d');
+  fillCanvasBg();
+}
+
+function fillCanvasBg() {
+  ctx.fillStyle = CANVAS_BG;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+}
+
+function getCanvasPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = CANVAS_W / rect.width;
+  const scaleY = CANVAS_H / rect.height;
+  const src = e.touches ? e.touches[0] : e;
+  return {
+    x: Math.round((src.clientX - rect.left) * scaleX),
+    y: Math.round((src.clientY - rect.top) * scaleY)
+  };
+}
+
+function isFrozen() {
+  return activeSession && (activeSession.state === 'auction' || activeSession.state === 'locked');
+}
+
+function drawStrokeOnCtx(strokeData) {
+  const { points, color, size } = strokeData;
+  if (!points || points.length < 1) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = size;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  if (points.length === 1) {
+    ctx.arc(points[0].x, points[0].y, size / 2, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  } else {
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function setupCanvasEvents() {
+  function onStart(e) {
+    if (isFrozen()) return;
+    e.preventDefault();
+    isDrawing = true;
+    const pos = getCanvasPos(e);
+    currentPoints = [pos];
+    drawStrokeOnCtx({ points: currentPoints, color: tool === 'erase' ? CANVAS_BG : brushColor, size: tool === 'erase' ? brushSize * 3 : brushSize });
+  }
+  function onMove(e) {
+    if (!isDrawing || isFrozen()) return;
+    e.preventDefault();
+    const pos = getCanvasPos(e);
+    currentPoints.push(pos);
+    const last2 = currentPoints.slice(-2);
+    drawStrokeOnCtx({ points: last2, color: tool === 'erase' ? CANVAS_BG : brushColor, size: tool === 'erase' ? brushSize * 3 : brushSize });
+  }
+  function onEnd(e) {
+    if (!isDrawing) return;
+    isDrawing = false;
+    if (!activeSession || currentPoints.length === 0) return;
+    const strokeData = {
+      points: currentPoints,
+      color: tool === 'erase' ? CANVAS_BG : brushColor,
+      size: tool === 'erase' ? brushSize * 3 : brushSize,
+      type: tool
+    };
+    socket.emit('stroke', { sessionId: activeSession.id, strokeData });
+    currentPoints = [];
+  }
+
+  canvas.addEventListener('mousedown', onStart);
+  canvas.addEventListener('mousemove', onMove);
+  canvas.addEventListener('mouseup', onEnd);
+  canvas.addEventListener('mouseleave', onEnd);
+  canvas.addEventListener('touchstart', onStart, { passive: false });
+  canvas.addEventListener('touchmove', onMove, { passive: false });
+  canvas.addEventListener('touchend', onEnd);
+}
+
+async function loadAndReplayStrokes(sessionId) {
+  fillCanvasBg();
+  try {
+    const { strokes } = await api('GET', `/api/session/${sessionId}/strokes`);
+    for (const s of strokes) {
+      drawStrokeOnCtx(s.stroke_data);
+    }
+  } catch (err) {
+    console.error('replay error:', err);
+  }
+}
+
+function captureCanvasSnapshot() {
+  const small = document.createElement('canvas');
+  small.width = 200;
+  small.height = 140;
+  const sctx = small.getContext('2d');
+  sctx.drawImage(canvas, 0, 0, 200, 140);
+  return small.toDataURL('image/jpeg', 0.4);
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+function renderHeader() {
+  document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
+  document.getElementById('credit-display').textContent = me ? `💎 ${me.credits}` : '💎 --';
+  const btn = document.getElementById('new-session-btn');
+  btn.disabled = !!(activeSession && (activeSession.state === 'active' || activeSession.state === 'auction'));
+}
+
+function renderMain() {
+  const noView = document.getElementById('no-session-view');
+  const sessView = document.getElementById('session-view');
+  const lockView = document.getElementById('locked-view');
+
+  noView.classList.add('hidden');
+  sessView.classList.add('hidden');
+  sessView.classList.remove('flex');
+  lockView.classList.add('hidden');
+
+  if (!activeSession) {
+    if (lockedSessionData) {
+      renderLockedView(lockedSessionData);
+      lockView.classList.remove('hidden');
+    } else {
+      noView.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (activeSession.state === 'active' || activeSession.state === 'auction') {
+    sessView.classList.remove('hidden');
+    sessView.classList.add('flex');
+
+    document.getElementById('sv-name').textContent = activeSession.name;
+    document.getElementById('sv-creator').textContent = `@${activeSession.creator_username}`;
+
+    const badge = document.getElementById('sv-badge');
+    if (activeSession.state === 'active') {
+      badge.textContent = 'Active';
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full font-medium bg-emerald-900/50 text-emerald-400';
+    } else {
+      badge.textContent = 'Auction';
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full font-medium bg-amber-900/50 text-amber-400';
     }
 
-    document.getElementById('press-btn').addEventListener('click', async () => {
-      try {
-        const res = await fetch('/api/press', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-        });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
-      } catch {}
-    });
+    const frozenMsg = document.getElementById('sv-frozen-msg');
+    if (activeSession.state === 'auction') {
+      frozenMsg.classList.remove('hidden');
+      canvas.classList.add('frozen');
+    } else {
+      frozenMsg.classList.add('hidden');
+      canvas.classList.remove('frozen');
+    }
 
-    loadLeaderboard();
-  </script>
+    // Clear button (creator only)
+    const clearBtn = document.getElementById('clear-btn');
+    if (me && activeSession.creator_user_id === me.id && activeSession.state === 'active') {
+      clearBtn.classList.remove('hidden');
+    } else {
+      clearBtn.classList.add('hidden');
+    }
+
+    renderAuctionPanel();
+  }
+}
+
+function renderAuctionPanel() {
+  const panel = document.getElementById('auction-panel');
+  if (!activeSession || !me) { panel.innerHTML = ''; return; }
+
+  const isCreator = me.id === activeSession.creator_user_id;
+  const isLeader = me.id === activeSession.current_leader_user_id;
+  const currentBid = parseInt(activeSession.current_bid) || 0;
+  const minNext = currentBid ? Math.ceil(currentBid * 1.01) : 1;
+
+  if (activeSession.state === 'active') {
+    panel.innerHTML = `
+      <div>
+        <p class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Auction</p>
+        <p class="text-sm text-zinc-400 mb-4">Place the first bid to start generating an AI artwork from this canvas.</p>
+        <div class="flex gap-2 mb-2">
+          <input id="bid-input" type="number" min="1" value="1"
+            class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0"
+            placeholder="Credits">
+          <button id="bid-btn" class="px-3 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">Bid to Generate</button>
+        </div>
+        <p class="text-xs text-zinc-600">Minimum bid: 1 credit</p>
+      </div>
+    `;
+    document.getElementById('bid-btn').addEventListener('click', handleBid);
+    document.getElementById('bid-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleBid(); });
+
+  } else if (activeSession.state === 'auction') {
+    const remaining = activeSession._remaining !== undefined ? activeSession._remaining : 30;
+    const pct = Math.max(0, Math.min(1, remaining / 30));
+    const circumference = 2 * Math.PI * 20;
+    const dashOffset = circumference * (1 - pct);
+
+    let actionHtml = '';
+    if (auctionEnded) {
+      if (isLeader) {
+        actionHtml = `<button id="generate-btn" class="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold transition-all">✨ Generate Artwork</button>`;
+      } else {
+        actionHtml = `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won the auction!</div>`;
+      }
+    } else {
+      if (isLeader) {
+        actionHtml = `
+          <div class="bg-violet-900/30 border border-violet-700/50 rounded-lg p-3 text-center">
+            <p class="text-violet-300 text-sm font-medium">You're winning!</p>
+            <p class="text-xs text-zinc-500 mt-0.5">Hold your bid to generate the artwork</p>
+          </div>
+          <div class="flex gap-2">
+            <input id="bid-input" type="number" min="${minNext}" value="${minNext}"
+              class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0" placeholder="Overbid">
+            <button id="bid-btn" class="px-3 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors">Bid</button>
+          </div>
+        `;
+      } else {
+        actionHtml = `
+          <div class="flex gap-2">
+            <input id="bid-input" type="number" min="${minNext}" value="${minNext}"
+              class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0" placeholder="Credits">
+            <button id="bid-btn" class="px-3 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors">Outbid</button>
+          </div>
+          <p class="text-xs text-zinc-600">Min: ${minNext} credits</p>
+        `;
+      }
+    }
+
+    panel.innerHTML = `
+      <div>
+        <p class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Live Auction</p>
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="text-xl font-bold text-white">${currentBid} <span class="text-sm font-normal text-zinc-400">credits</span></p>
+            <p class="text-xs text-zinc-500">Leader: <span class="text-violet-300">@${activeSession.current_leader_username || '—'}</span></p>
+          </div>
+          <div class="relative w-12 h-12 flex-shrink-0">
+            <svg class="w-12 h-12 -rotate-90" viewBox="0 0 48 48">
+              <circle cx="24" cy="24" r="20" fill="none" stroke="#27272a" stroke-width="4"/>
+              <circle id="countdown-ring" cx="24" cy="24" r="20" fill="none"
+                stroke="${remaining <= 5 ? '#ef4444' : remaining <= 10 ? '#f59e0b' : '#7c3aed'}"
+                stroke-width="4" stroke-linecap="round"
+                stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
+            </svg>
+            <span id="countdown-text" class="absolute inset-0 flex items-center justify-center text-xs font-bold ${remaining <= 5 ? 'text-red-400' : remaining <= 10 ? 'text-amber-400' : 'text-zinc-200'}">${auctionEnded ? '0' : remaining}</span>
+          </div>
+        </div>
+        <div class="flex flex-col gap-2">
+          ${actionHtml}
+        </div>
+      </div>
+    `;
+
+    const bidBtn = document.getElementById('bid-btn');
+    if (bidBtn) {
+      bidBtn.addEventListener('click', handleBid);
+      document.getElementById('bid-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') handleBid(); });
+    }
+    const genBtn = document.getElementById('generate-btn');
+    if (genBtn) genBtn.addEventListener('click', handleGenerate);
+  }
+}
+
+function updateCountdown(remaining) {
+  if (!activeSession || activeSession.state !== 'auction') return;
+  activeSession._remaining = remaining;
+
+  const textEl = document.getElementById('countdown-text');
+  const ringEl = document.getElementById('countdown-ring');
+  if (!textEl || !ringEl) return;
+
+  const pct = Math.max(0, Math.min(1, remaining / 30));
+  const circumference = 2 * Math.PI * 20;
+  ringEl.style.strokeDashoffset = circumference * (1 - pct);
+  ringEl.setAttribute('stroke', remaining <= 5 ? '#ef4444' : remaining <= 10 ? '#f59e0b' : '#7c3aed');
+  textEl.textContent = remaining;
+  textEl.className = `absolute inset-0 flex items-center justify-center text-xs font-bold ${remaining <= 5 ? 'text-red-400' : remaining <= 10 ? 'text-amber-400' : 'text-zinc-200'}`;
+}
+
+function renderLockedView(data) {
+  document.getElementById('lv-name').textContent = data.name;
+  document.getElementById('lv-artwork').src = data.image_url || '';
+  document.getElementById('lv-prompt').textContent = data.prompt || '';
+  document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username} · ${data.winning_bid || data.current_bid || '?'} credits`;
+
+  // Thumbnail
+  if (data.canvas_snapshot) {
+    const thumb = document.getElementById('locked-canvas-thumb');
+    const img = new Image();
+    img.onload = () => {
+      const tc = thumb.getContext('2d');
+      tc.drawImage(img, 0, 0, 200, 140);
+    };
+    img.src = data.canvas_snapshot;
+  }
+}
+
+async function renderArchive() {
+  try {
+    const { sessions } = await api('GET', '/api/sessions/locked');
+    const el = document.getElementById('archive-list');
+    if (!sessions.length) {
+      el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
+      return;
+    }
+    el.innerHTML = sessions.map(s => `
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+        <img src="${s.image_url || 'https://picsum.photos/seed/default/400/300'}" alt="Generated artwork"
+          class="w-full aspect-video object-cover bg-zinc-800" loading="lazy">
+        <div class="p-3">
+          <p class="font-medium text-sm text-white truncate">${esc(s.name)}</p>
+          <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
+          ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
+          <p class="text-xs text-zinc-600 mt-1 italic truncate">${esc(s.prompt || '')}</p>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('archive error:', err);
+  }
+}
+
+function esc(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Actions ──────────────────────────────────────────────────────────────────
+async function handleBid() {
+  const input = document.getElementById('bid-input');
+  if (!input) return;
+  const amount = parseInt(input.value);
+  if (!amount || amount < 1) return;
+  const btn = document.getElementById('bid-btn');
+  btn.disabled = true;
+  btn.textContent = 'Placing…';
+  try {
+    const data = await api('POST', '/api/bid', { sessionId: activeSession.id, amount });
+    if (me) { me.credits = data.credits; renderHeader(); }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = activeSession.state === 'active' ? 'Bid to Generate' : 'Outbid';
+    alert(err.message);
+  }
+}
+
+async function handleGenerate() {
+  const btn = document.getElementById('generate-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+  try {
+    const snapshot = captureCanvasSnapshot();
+    await api('POST', '/api/generate', { sessionId: activeSession.id, canvasSnapshot: snapshot });
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
+    alert(err.message);
+  }
+}
+
+// ─── Socket setup ─────────────────────────────────────────────────────────────
+function initSocket() {
+  socket = io({ auth: { token } });
+
+  socket.on('connect', () => {
+    if (activeSession) socket.emit('join-session', activeSession.id);
+  });
+
+  socket.on('stroke', ({ strokeData }) => {
+    drawStrokeOnCtx(strokeData);
+  });
+
+  socket.on('canvas-cleared', () => {
+    fillCanvasBg();
+  });
+
+  socket.on('session-created', ({ session }) => {
+    activeSession = session;
+    auctionEnded = false;
+    socket.emit('join-session', session.id);
+    fillCanvasBg();
+    renderHeader();
+    renderMain();
+  });
+
+  socket.on('bid-placed', (data) => {
+    if (!activeSession || activeSession.id !== data.sessionId) return;
+    activeSession.state = 'auction';
+    activeSession.current_bid = data.amount;
+    activeSession.current_leader_user_id = data.userId;
+    activeSession.current_leader_username = data.username;
+    activeSession.expires_at = data.expiresAt;
+    activeSession._remaining = 30;
+    auctionEnded = false;
+    renderMain();
+  });
+
+  socket.on('auction-tick', ({ remaining }) => {
+    if (!activeSession || activeSession.state !== 'auction') return;
+    updateCountdown(remaining);
+  });
+
+  socket.on('auction-ended', (data) => {
+    if (!activeSession || activeSession.id !== data.sessionId) return;
+    auctionEnded = true;
+    activeSession._remaining = 0;
+    renderAuctionPanel();
+  });
+
+  socket.on('session-locked', async (data) => {
+    if (activeSession && activeSession.id === data.sessionId) {
+      lockedSessionData = {
+        ...activeSession,
+        image_url: data.imageUrl,
+        prompt: data.prompt,
+        winner_username: data.winnerUsername,
+        canvas_snapshot: data.canvasSnapshot
+      };
+      activeSession = null;
+      auctionEnded = false;
+    }
+    renderHeader();
+    renderMain();
+    renderLockedView(lockedSessionData);
+    document.getElementById('locked-view').classList.remove('hidden');
+    renderArchive();
+  });
+}
+
+// ─── Tool bar events ──────────────────────────────────────────────────────────
+function initToolbar() {
+  document.getElementById('draw-btn').addEventListener('click', () => {
+    tool = 'draw';
+    document.getElementById('draw-btn').classList.add('active');
+    document.getElementById('eraser-btn').classList.remove('active');
+  });
+  document.getElementById('eraser-btn').addEventListener('click', () => {
+    tool = 'erase';
+    document.getElementById('eraser-btn').classList.add('active');
+    document.getElementById('draw-btn').classList.remove('active');
+  });
+  document.getElementById('color-picker').addEventListener('input', e => {
+    brushColor = e.target.value;
+    if (tool === 'erase') {
+      tool = 'draw';
+      document.getElementById('draw-btn').classList.add('active');
+      document.getElementById('eraser-btn').classList.remove('active');
+    }
+  });
+  document.getElementById('size-slider').addEventListener('input', e => {
+    brushSize = parseInt(e.target.value);
+    document.getElementById('size-label').textContent = `${brushSize}px`;
+  });
+  document.getElementById('clear-btn').addEventListener('click', () => {
+    if (!activeSession || activeSession.state !== 'active') return;
+    if (!confirm('Clear the canvas? This cannot be undone.')) return;
+    socket.emit('clear-canvas', activeSession.id);
+  });
+}
+
+// ─── Modal ────────────────────────────────────────────────────────────────────
+function initModal() {
+  const btn = document.getElementById('new-session-btn');
+  const modal = document.getElementById('modal');
+  const cancelBtn = document.getElementById('modal-cancel');
+  const createBtn = document.getElementById('modal-create');
+  const nameInput = document.getElementById('modal-name');
+  const errEl = document.getElementById('modal-error');
+
+  btn.addEventListener('click', () => {
+    nameInput.value = '';
+    errEl.classList.add('hidden');
+    modal.classList.remove('hidden');
+    setTimeout(() => nameInput.focus(), 50);
+  });
+  cancelBtn.addEventListener('click', () => modal.classList.add('hidden'));
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
+
+  async function doCreate() {
+    const name = nameInput.value.trim();
+    if (!name) { errEl.textContent = 'Please enter a session name.'; errEl.classList.remove('hidden'); return; }
+    createBtn.disabled = true;
+    createBtn.textContent = 'Creating…';
+    errEl.classList.add('hidden');
+    try {
+      const { session } = await api('POST', '/api/session', { name });
+      activeSession = session;
+      auctionEnded = false;
+      modal.classList.add('hidden');
+      fillCanvasBg();
+      renderHeader();
+      renderMain();
+      socket.emit('join-session', session.id);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    } finally {
+      createBtn.disabled = false;
+      createBtn.textContent = 'Create';
+    }
+  }
+
+  createBtn.addEventListener('click', doCreate);
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') doCreate(); });
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  initCanvas();
+  setupCanvasEvents();
+  initToolbar();
+  initModal();
+  initSocket();
+
+  try {
+    me = await api('GET', '/api/me');
+  } catch (e) {
+    console.error('Failed to load user:', e);
+  }
+
+  try {
+    const { session } = await api('GET', '/api/session/active');
+    activeSession = session;
+
+    if (activeSession) {
+      socket.emit('join-session', activeSession.id);
+      await loadAndReplayStrokes(activeSession.id);
+
+      if (activeSession.state === 'auction' && activeSession.expires_at) {
+        if (new Date(activeSession.expires_at) < new Date()) {
+          auctionEnded = true;
+        } else {
+          activeSession._remaining = Math.max(0, Math.ceil((new Date(activeSession.expires_at) - Date.now()) / 1000));
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load session:', e);
+  }
+
+  renderHeader();
+  renderMain();
+  renderArchive();
+}
+
+init();
+</script>
 </body>
 </html>
