@@ -2,7 +2,7 @@
   "name": "artwork-2b0645",
   "version": "1.0.0",
   "private": true,
-  "description": "artwork",
+  "description": "Artwork Collaborative Workspace",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,7 @@
   "dependencies": {
     "express": "^4.21.0",
     "pg": "^8.13.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "socket.io": "^4.8.0"
   }
 }
