@@ -43,7 +43,7 @@ io.use((socket, next) => {
 });
 
 // ─── Auction timer ────────────────────────────────────────────────────────────
-let auctionTimer = null; // { sessionId, timerId, intervalId, expiresAt }
+let auctionTimer = null;
 
 function clearAuctionTimer() {
   if (auctionTimer) {
@@ -92,9 +92,14 @@ async function handleAuctionEnd(sessionId) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function ensureUserCredits(userId, username) {
   await pool.query(
-    `INSERT INTO user_credits (user_id, username, balance) VALUES ($1, $2, 100) ON CONFLICT (user_id) DO NOTHING`,
+    `INSERT INTO user_credits (user_id, username, balance) VALUES ($1, $2, 1000) ON CONFLICT (user_id) DO NOTHING`,
     [userId, username]
   );
+}
+
+function parseWords(input) {
+  if (Array.isArray(input)) return input.map(w => String(w).trim()).filter(Boolean);
+  return String(input || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -104,7 +109,7 @@ app.get('/api/me', async (req, res) => {
   try {
     await ensureUserCredits(req.user.id, req.user.username);
     const { rows } = await pool.query('SELECT balance FROM user_credits WHERE user_id = $1', [req.user.id]);
-    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 100 });
+    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 1000 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -130,7 +135,7 @@ app.get('/api/sessions/locked', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
-        g.image_url, g.prompt, g.canvas_snapshot
+        g.image_url, g.prompt
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
@@ -146,8 +151,12 @@ app.get('/api/sessions/locked', async (_req, res) => {
 
 app.post('/api/session', async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, words: rawWords } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+
+    const words = parseWords(rawWords);
+    if (words.length !== 10) return res.status(400).json({ error: 'Exactly 10 words required' });
+    if (words.some(w => w.length > 30)) return res.status(400).json({ error: 'Each word must be 30 characters or fewer' });
 
     const { rows: existing } = await pool.query(
       `SELECT id FROM sessions WHERE state IN ('active', 'auction') LIMIT 1`
@@ -155,24 +164,12 @@ app.post('/api/session', async (req, res) => {
     if (existing.length) return res.status(409).json({ error: 'A session is already active' });
 
     const { rows } = await pool.query(
-      `INSERT INTO sessions (name, creator_user_id, creator_username, state) VALUES ($1, $2, $3, 'active') RETURNING *`,
-      [name.trim(), req.user.id, req.user.username]
+      `INSERT INTO sessions (name, creator_user_id, creator_username, state, words) VALUES ($1, $2, $3, 'active', $4) RETURNING *`,
+      [name.trim(), req.user.id, req.user.username, words.join(',')]
     );
 
     io.emit('session-created', { session: rows[0] });
     res.json({ session: rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/session/:id/strokes', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      'SELECT * FROM canvas_strokes WHERE session_id = $1 ORDER BY created_at ASC',
-      [req.params.id]
-    );
-    res.json({ strokes: rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -218,10 +215,8 @@ app.post('/api/bid', async (req, res) => {
       return res.status(400).json({ error: 'Insufficient credits' });
     }
 
-    // Deduct from bidder
     await client.query('UPDATE user_credits SET balance = balance - $1 WHERE user_id = $2', [bidAmount, req.user.id]);
 
-    // Refund previous leader
     if (currentAuction) {
       await client.query(
         'UPDATE user_credits SET balance = balance + $1 WHERE user_id = $2',
@@ -275,15 +270,136 @@ app.post('/api/bid', async (req, res) => {
   }
 });
 
+app.post('/api/session/:id/change-word', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const sessionId = parseInt(req.params.id);
+    const { wordIndex, newWord, bidAmount: rawBid } = req.body;
+    const bidAmount = parseInt(rawBid);
+
+    if (wordIndex === undefined || wordIndex < 0 || wordIndex > 9) {
+      return res.status(400).json({ error: 'wordIndex must be 0–9' });
+    }
+    const trimmedWord = String(newWord || '').trim();
+    if (!trimmedWord) return res.status(400).json({ error: 'Word cannot be empty' });
+    if (trimmedWord.length > 30) return res.status(400).json({ error: 'Word must be 30 characters or fewer' });
+    if (!bidAmount || bidAmount < 1) return res.status(400).json({ error: 'Invalid bid amount' });
+
+    await client.query('BEGIN');
+
+    const { rows: sessions } = await client.query(
+      `SELECT * FROM sessions WHERE id = $1 AND state IN ('active', 'auction') FOR UPDATE`,
+      [sessionId]
+    );
+    if (!sessions.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Session not available' });
+    }
+    const session = sessions[0];
+
+    const { rows: auctions } = await client.query(
+      'SELECT * FROM auctions WHERE session_id = $1',
+      [sessionId]
+    );
+    const currentAuction = auctions[0];
+
+    const minBid = currentAuction ? Math.ceil(parseInt(currentAuction.current_bid) * 1.01) : 1;
+    if (bidAmount < minBid) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `Minimum bid is ${minBid} credits` });
+    }
+
+    await ensureUserCredits(req.user.id, req.user.username);
+    const { rows: creditRows } = await client.query(
+      'SELECT balance FROM user_credits WHERE user_id = $1 FOR UPDATE',
+      [req.user.id]
+    );
+    const balance = parseInt(creditRows[0]?.balance ?? 0);
+    if (balance < bidAmount + 1) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Insufficient credits' });
+    }
+
+    // Deduct bid + 1 credit word-change fee
+    await client.query('UPDATE user_credits SET balance = balance - $1 WHERE user_id = $2', [bidAmount + 1, req.user.id]);
+
+    if (currentAuction) {
+      await client.query(
+        'UPDATE user_credits SET balance = balance + $1 WHERE user_id = $2',
+        [currentAuction.current_bid, currentAuction.current_leader_user_id]
+      );
+    }
+
+    const wordArr = (session.words || '').split(',');
+    wordArr[wordIndex] = trimmedWord;
+    const newWordsStr = wordArr.join(',');
+    await client.query('UPDATE sessions SET words = $1 WHERE id = $2', [newWordsStr, sessionId]);
+
+    await client.query(
+      'INSERT INTO bids (session_id, user_id, username, amount) VALUES ($1, $2, $3, $4)',
+      [sessionId, req.user.id, req.user.username, bidAmount]
+    );
+
+    const expiresAt = new Date(Date.now() + 30000);
+
+    if (currentAuction) {
+      await client.query(
+        `UPDATE auctions SET current_leader_user_id=$1, current_leader_username=$2, current_bid=$3, expires_at=$4 WHERE session_id=$5`,
+        [req.user.id, req.user.username, bidAmount, expiresAt, sessionId]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO auctions (session_id, current_leader_user_id, current_leader_username, current_bid, expires_at) VALUES ($1,$2,$3,$4,$5)`,
+        [sessionId, req.user.id, req.user.username, bidAmount, expiresAt]
+      );
+    }
+
+    await client.query(`UPDATE sessions SET state = 'auction' WHERE id = $1`, [sessionId]);
+    await client.query('COMMIT');
+
+    const { rows: newCreditRows } = await pool.query('SELECT balance FROM user_credits WHERE user_id = $1', [req.user.id]);
+    const newBalance = newCreditRows[0]?.balance ?? 0;
+
+    startAuctionTimer(sessionId, expiresAt);
+
+    const minNextBid = Math.ceil(bidAmount * 1.01);
+
+    io.to(`session:${sessionId}`).emit('word-changed', {
+      sessionId,
+      words: newWordsStr.split(','),
+      changedBy: req.user.username
+    });
+
+    io.to(`session:${sessionId}`).emit('bid-placed', {
+      sessionId,
+      userId: req.user.id,
+      username: req.user.username,
+      amount: bidAmount,
+      expiresAt,
+      minNextBid,
+      state: 'auction'
+    });
+
+    res.json({ ok: true, words: newWordsStr.split(','), newBalance, highestBid: bidAmount });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/generate', async (req, res) => {
   try {
-    const { sessionId, canvasSnapshot } = req.body;
+    const { sessionId } = req.body;
 
     const { rows: sessions } = await pool.query(
       `SELECT * FROM sessions WHERE id = $1 AND state = 'auction'`,
       [sessionId]
     );
     if (!sessions.length) return res.status(409).json({ error: 'Session not in auction state' });
+
+    const session = sessions[0];
 
     const { rows: auctions } = await pool.query('SELECT * FROM auctions WHERE session_id = $1', [sessionId]);
     if (!auctions.length) return res.status(404).json({ error: 'Auction not found' });
@@ -296,13 +412,14 @@ app.post('/api/generate', async (req, res) => {
       return res.status(409).json({ error: 'Auction has not ended yet' });
     }
 
+    const wordsStr = session.words || '';
+    const prompt = `A beautiful artwork inspired by: ${wordsStr}`;
     const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
-    const prompt = 'A beautiful AI artwork generated from the collaborative drawing.';
 
     await pool.query(
       `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, req.user.id, req.user.username, imageUrl, prompt, canvasSnapshot || null]
+      [sessionId, req.user.id, req.user.username, imageUrl, prompt, null]
     );
 
     await pool.query(`UPDATE sessions SET state = 'locked', locked_at = NOW() WHERE id = $1`, [sessionId]);
@@ -311,8 +428,8 @@ app.post('/api/generate', async (req, res) => {
       sessionId,
       imageUrl,
       prompt,
-      winnerUsername: req.user.username,
-      canvasSnapshot: canvasSnapshot || null
+      words: wordsStr.split(','),
+      winnerUsername: req.user.username
     });
 
     res.json({ ok: true, imageUrl, prompt });
@@ -325,47 +442,6 @@ app.post('/api/generate', async (req, res) => {
 io.on('connection', (socket) => {
   socket.on('join-session', (sessionId) => {
     socket.join(`session:${sessionId}`);
-  });
-
-  socket.on('stroke', async ({ sessionId, strokeData }) => {
-    try {
-      const { rows } = await pool.query(
-        `INSERT INTO canvas_strokes (session_id, user_id, username, stroke_data) VALUES ($1,$2,$3,$4) RETURNING id`,
-        [sessionId, socket.user.id, socket.user.username, JSON.stringify(strokeData)]
-      );
-      socket.to(`session:${sessionId}`).emit('stroke', {
-        id: rows[0].id,
-        userId: socket.user.id,
-        username: socket.user.username,
-        strokeData
-      });
-    } catch (err) {
-      console.error('stroke error:', err);
-    }
-  });
-
-  socket.on('clear-canvas', async (sessionId) => {
-    try {
-      const { rows } = await pool.query('SELECT creator_user_id FROM sessions WHERE id = $1', [sessionId]);
-      if (!rows.length || rows[0].creator_user_id !== socket.user.id) return;
-      await pool.query('DELETE FROM canvas_strokes WHERE session_id = $1', [sessionId]);
-      io.to(`session:${sessionId}`).emit('canvas-cleared');
-    } catch (err) {
-      console.error('clear-canvas error:', err);
-    }
-  });
-
-  socket.on('canvas-snapshot', async ({ sessionId, dataUrl }) => {
-    try {
-      await pool.query('DELETE FROM canvas_strokes WHERE session_id = $1', [sessionId]);
-      await pool.query(
-        `INSERT INTO canvas_strokes (session_id, user_id, username, stroke_data) VALUES ($1,$2,$3,$4)`,
-        [sessionId, socket.user.id, socket.user.username, JSON.stringify({ type: 'snapshot', dataUrl })]
-      );
-      socket.to(`session:${sessionId}`).emit('canvas-snapshot', { dataUrl });
-    } catch (err) {
-      console.error('canvas-snapshot error:', err);
-    }
   });
 });
 
@@ -399,12 +475,13 @@ async function start() {
       locked_at TIMESTAMPTZ
     )
   `);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS words TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_credits (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL UNIQUE,
       username VARCHAR(255) NOT NULL,
-      balance INTEGER NOT NULL DEFAULT 100
+      balance INTEGER NOT NULL DEFAULT 1000
     )
   `);
   await pool.query(`

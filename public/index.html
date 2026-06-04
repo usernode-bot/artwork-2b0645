@@ -69,18 +69,6 @@
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    #drawing-canvas { cursor: crosshair; display: block; background: #ffffff; }
-    #drawing-canvas.frozen { cursor: not-allowed; }
-    .tool-btn  { transition: background 0.12s, color 0.12s; }
-    .style-btn { transition: background 0.12s, color 0.12s; }
-    .toggle-btn { transition: background 0.12s, color 0.12s; }
-    .tool-btn.active  { background: #7c3aed !important; color: #fff !important; }
-    .style-btn.active { background: #7c3aed !important; color: #fff !important; }
-    .toggle-btn.on    { background: #059669 !important; color: #fff !important; }
-    #countdown-ring   { transition: stroke-dashoffset 1s linear; }
-    ::-webkit-scrollbar { width: 5px; }
-    ::-webkit-scrollbar-track { background: #18181b; }
-    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
     #session-view {
       position: fixed;
       top: 48px; left: 0; right: 0; bottom: 0;
@@ -88,45 +76,18 @@
       background: #09090b;
       flex-direction: column;
     }
-    #canvas-stage {
+    #words-stage {
       flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
       position: relative;
       min-height: 0;
+      padding: 20px 262px 20px 20px;
     }
-    #canvas-wrap {
-      position: relative;
-      display: inline-block;
-      line-height: 0;
-      max-width: calc(100% - 210px);
-      max-height: 100%;
-    }
-    #drawing-canvas {
-      max-width: 100%;
-      max-height: 100%;
-      width: auto;
-      height: auto;
-    }
-    #grid-overlay {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      display: none;
-      background-image:
-        linear-gradient(rgba(100,100,100,0.25) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(100,100,100,0.25) 1px, transparent 1px);
-      background-size: 5% 7.142857143%;
-    }
-    #tool-bar {
-      position: absolute;
-      left: 10px; top: 10px; bottom: 10px;
-      width: 182px;
-      z-index: 10;
-      overflow-y: auto;
-      overflow-x: hidden;
+    #words-panel {
+      max-width: 640px;
+      width: 100%;
     }
     #auction-panel {
       position: absolute;
@@ -135,6 +96,40 @@
       z-index: 10;
       overflow-y: auto;
     }
+    #countdown-ring { transition: stroke-dashoffset 1s linear; }
+    .word-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      background: rgba(124,58,237,0.15);
+      border: 1px solid rgba(124,58,237,0.35);
+      color: #c4b5fd;
+      cursor: default;
+      transition: background 0.12s, border-color 0.12s;
+      user-select: none;
+    }
+    .word-chip.editable {
+      cursor: pointer;
+    }
+    .word-chip.editable:hover {
+      background: rgba(124,58,237,0.28);
+      border-color: rgba(124,58,237,0.6);
+    }
+    .word-chip .edit-icon {
+      opacity: 0;
+      font-size: 0.7rem;
+      transition: opacity 0.12s;
+    }
+    .word-chip.editable:hover .edit-icon {
+      opacity: 1;
+    }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #18181b; }
+    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
@@ -158,7 +153,7 @@
     <div id="no-session-view" class="flex flex-col items-center justify-center py-20 text-zinc-600">
       <div class="text-5xl mb-4">🖼️</div>
       <p class="text-lg font-medium text-zinc-400 mb-1">No active session</p>
-      <p class="text-sm">Create a new session to start drawing together.</p>
+      <p class="text-sm">Create a new session to start a collaborative artwork.</p>
     </div>
 
     <!-- Active / Auction session (full-screen fixed overlay) -->
@@ -168,92 +163,18 @@
         <span class="font-semibold text-white text-sm truncate max-w-xs" id="sv-name"></span>
         <span class="text-zinc-500 text-xs flex-shrink-0">by <span class="text-zinc-300" id="sv-creator"></span></span>
         <span id="sv-badge" class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"></span>
-        <span id="sv-frozen-msg" class="hidden text-xs text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded-full flex-shrink-0">🔒 Frozen</span>
       </div>
 
-      <!-- Canvas stage -->
-      <div id="canvas-stage">
-        <!-- Canvas + grid overlay -->
-        <div id="canvas-wrap">
-          <canvas id="drawing-canvas" width="800" height="560"></canvas>
-          <div id="grid-overlay"></div>
+      <!-- Words + auction area -->
+      <div id="words-stage">
+        <!-- Words panel (centered) -->
+        <div id="words-panel">
+          <p class="text-xs text-zinc-500 uppercase tracking-widest mb-4">10 Words</p>
+          <div id="word-chips" class="flex flex-wrap gap-2"></div>
+          <p class="text-xs text-zinc-600 mt-4">Click a word to change it (costs 1 credit + bid)</p>
         </div>
 
-        <!-- ─── Floating toolbar (left) ─── -->
-        <div id="tool-bar" class="bg-zinc-900/96 backdrop-blur-md border border-zinc-700/80 rounded-2xl p-2.5 shadow-2xl flex flex-col gap-2 select-none text-zinc-300">
-
-          <!-- Color swatch + sliders -->
-          <div class="flex items-start gap-2">
-            <div id="color-swatch" class="w-8 h-8 rounded-lg border-2 border-zinc-600 cursor-pointer flex-shrink-0 mt-0.5 shadow-inner" style="background:#000000" title="Pick color"></div>
-            <input type="color" id="color-picker" value="#000000" class="sr-only">
-            <div class="flex-1 min-w-0 space-y-1.5 pt-0.5">
-              <div class="flex items-center gap-1">
-                <span class="text-xs text-zinc-500 w-4 flex-shrink-0">A</span>
-                <input type="range" id="opacity-slider" min="10" max="100" value="100" class="flex-1 min-w-0 accent-violet-500 h-1">
-                <span id="opacity-label" class="text-xs text-zinc-500 w-7 text-right tabular-nums">100</span>
-              </div>
-              <div class="flex items-center gap-1">
-                <span class="text-xs text-zinc-500 w-4 flex-shrink-0">⌀</span>
-                <input type="range" id="size-slider" min="1" max="80" value="6" class="flex-1 min-w-0 accent-violet-500 h-1">
-                <span id="size-label" class="text-xs text-zinc-500 w-7 text-right tabular-nums">6</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="border-t border-zinc-700/50"></div>
-
-          <!-- Tools -->
-          <div>
-            <p class="text-xs text-zinc-600 uppercase tracking-widest mb-1.5">Tools</p>
-            <div class="grid grid-cols-2 gap-1">
-              <button id="tool-brush"  class="tool-btn active px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">✏️ Brush</button>
-              <button id="tool-eraser" class="tool-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">⬜ Erase</button>
-              <button id="tool-line"   class="tool-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">╱ Line</button>
-              <button id="tool-rect"   class="tool-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">□ Rect</button>
-              <button id="tool-circle" class="tool-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">○ Circle</button>
-              <button id="tool-fill"   class="tool-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">🪣 Fill</button>
-              <button id="tool-text"   class="tool-btn col-span-2 px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 flex items-center gap-1">𝐓 Text (click to place)</button>
-            </div>
-          </div>
-
-          <div class="border-t border-zinc-700/50"></div>
-
-          <!-- Brush style (visible for brush tool) -->
-          <div id="style-section">
-            <p class="text-xs text-zinc-600 uppercase tracking-widest mb-1.5">Brush Style</p>
-            <div class="grid grid-cols-2 gap-1">
-              <button id="style-normal" class="style-btn active px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800">Normal</button>
-              <button id="style-soft"   class="style-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800">Soft</button>
-              <button id="style-dotted" class="style-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800">Dotted</button>
-              <button id="style-calli"  class="style-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800">Calli</button>
-            </div>
-          </div>
-
-          <div class="border-t border-zinc-700/50"></div>
-
-          <!-- Canvas helpers -->
-          <div>
-            <p class="text-xs text-zinc-600 uppercase tracking-widest mb-1.5">Canvas</p>
-            <div class="grid grid-cols-2 gap-1">
-              <button id="toggle-grid" class="toggle-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800"># Grid</button>
-              <button id="toggle-sym"  class="toggle-btn px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800">⟷ Mirror</button>
-            </div>
-          </div>
-
-          <!-- History (creator only) -->
-          <div id="history-section" class="hidden">
-            <div class="border-t border-zinc-700/50 mb-2"></div>
-            <p class="text-xs text-zinc-600 uppercase tracking-widest mb-1.5">History</p>
-            <div class="grid grid-cols-2 gap-1">
-              <button id="undo-btn" class="px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed" disabled>↩ Undo</button>
-              <button id="redo-btn" class="px-1.5 py-1.5 text-xs rounded-lg bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed" disabled>↪ Redo</button>
-            </div>
-            <button id="clear-btn" class="hidden w-full mt-1 px-1.5 py-1.5 text-xs rounded-lg bg-red-900/60 hover:bg-red-800/80 text-red-300 transition-colors">🗑 Clear Canvas</button>
-          </div>
-
-        </div>
-
-        <!-- ─── Floating auction panel (right) ─── -->
+        <!-- Floating auction panel (right) -->
         <div id="auction-panel" class="bg-zinc-900/96 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl p-4 flex flex-col gap-3">
           <!-- filled by renderAuctionPanel() -->
         </div>
@@ -272,10 +193,8 @@
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <p class="text-xs text-zinc-500 mb-2">Original Drawing</p>
-            <div class="bg-zinc-800 rounded-lg overflow-hidden aspect-square flex items-center justify-center">
-              <canvas id="locked-canvas-thumb" width="200" height="140" class="max-w-full max-h-full" style="background:#ffffff"></canvas>
-            </div>
+            <p class="text-xs text-zinc-500 mb-2">10 Words</p>
+            <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
           </div>
           <div>
             <p class="text-xs text-zinc-500 mb-2">Generated Artwork</p>
@@ -301,13 +220,41 @@
   <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
     <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
       <h2 class="text-lg font-semibold mb-1">New Session</h2>
-      <p class="text-sm text-zinc-500 mb-4">Give your collaborative drawing session a name.</p>
-      <input id="modal-name" type="text" placeholder="e.g. Sunset Vibes, Space Battle..." maxlength="80"
-        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-4 outline-none transition-colors">
+      <p class="text-sm text-zinc-500 mb-4">Give your session a name, then enter 10 words that will inspire the artwork.</p>
+      <input id="modal-name" type="text" placeholder="Session name (e.g. Cosmic Dream)" maxlength="80"
+        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
+      <div class="relative mb-1">
+        <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass shadow red silk dream echo"
+          class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
+        <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 10</span>
+      </div>
+      <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
       <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
       <div class="flex gap-2">
         <button id="modal-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
-        <button id="modal-create" class="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-medium transition-colors">Create</button>
+        <button id="modal-create" class="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors" disabled>Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Word Edit Modal -->
+  <div id="word-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-xs shadow-2xl">
+      <h2 class="text-base font-semibold mb-0.5">Change Word</h2>
+      <p class="text-xs text-zinc-500 mb-4">Replacing: <span id="wm-current" class="text-violet-300 font-medium"></span></p>
+      <input id="wm-word" type="text" placeholder="New word" maxlength="30"
+        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
+      <div class="mb-3">
+        <label class="text-xs text-zinc-500 block mb-1">Bid amount <span class="text-zinc-600">(must exceed current highest)</span></label>
+        <input id="wm-bid" type="number" min="1"
+          class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors">
+      </div>
+      <p class="text-xs text-zinc-500 mb-1">Your credits: <span id="wm-credits" class="text-violet-300 font-medium"></span></p>
+      <p class="text-xs text-zinc-600 mb-4">Cost: bid amount + 1 credit word-change fee</p>
+      <div id="wm-error" class="hidden text-red-400 text-xs mb-3"></div>
+      <div class="flex gap-2">
+        <button id="wm-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
+        <button id="wm-submit" class="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors">Change & Bid</button>
       </div>
     </div>
   </div>
@@ -318,31 +265,9 @@ const params = new URLSearchParams(location.search);
 const token  = params.get('token') || '';
 const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
 
-const CANVAS_BG = '#ffffff';
-const CANVAS_W  = 800;
-const CANVAS_H  = 560;
-const MAX_HISTORY = 50;
-
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
-
-// drawing state
-let tool        = 'brush';
-let brushStyle  = 'normal';
-let brushColor  = '#000000';
-let brushSize   = 6;
-let opacity     = 1.0;
-let symmetry    = false;
-let gridOn      = false;
-let isDrawing   = false;
-let currentPoints = [];
-let shapeStart  = null;
-let previewData = null; // ImageData saved before shape preview
-
-// history
-let history     = [];
-let historyIdx  = -1;
-
-let canvas, ctx, socket;
+let wordEditIndex = -1;
+let socket;
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -354,447 +279,38 @@ async function api(method, path, body) {
   return data;
 }
 
-// ─── Canvas helpers ───────────────────────────────────────────────────────────
-function initCanvas() {
-  canvas = document.getElementById('drawing-canvas');
-  ctx    = canvas.getContext('2d');
-  fillCanvasBg();
-  pushHistory();
+// ─── Word helpers ─────────────────────────────────────────────────────────────
+function getWords(session) {
+  if (!session?.words) return [];
+  if (Array.isArray(session.words)) return session.words;
+  return session.words.split(',').filter(Boolean);
 }
 
-function fillCanvasBg() {
-  ctx.save();
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = CANVAS_BG;
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-  ctx.restore();
+function parseInputWords(str) {
+  return String(str || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
 }
 
-function getCanvasPos(e) {
-  const rect  = canvas.getBoundingClientRect();
-  const scaleX = CANVAS_W / rect.width;
-  const scaleY = CANVAS_H / rect.height;
-  const src   = e.touches ? e.touches[0] : e;
-  return {
-    x: Math.round((src.clientX - rect.left) * scaleX),
-    y: Math.round((src.clientY - rect.top)  * scaleY)
-  };
-}
-
-function isFrozen() {
-  return activeSession && (activeSession.state === 'auction' || activeSession.state === 'locked');
-}
-
-function hexToRgba(hex, a) {
-  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-  return `rgba(${r},${g},${b},${a})`;
-}
-
-// ─── Apply stroke (used for replay + remote sync) ─────────────────────────────
-async function applyStroke(sd) {
-  if (!sd || !sd.type) return;
-
-  if (sd.type === 'snapshot') {
-    return new Promise(resolve => {
-      const img = new Image();
-      img.onload = () => { ctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H); resolve(); };
-      img.onerror = resolve;
-      img.src = sd.dataUrl;
-    });
-  }
-
-  if (sd.type === 'fill') {
-    floodFill(Math.round(sd.x), Math.round(sd.y), sd.color, sd.opacity || 1);
-    return;
-  }
-
-  if (sd.type === 'text') {
-    ctx.save();
-    ctx.globalAlpha = sd.opacity || 1;
-    ctx.fillStyle   = sd.color;
-    ctx.font        = `${sd.fontSize || 24}px sans-serif`;
-    ctx.fillText(sd.text, sd.x, sd.y);
-    ctx.restore();
-    return;
-  }
-
-  if (sd.type === 'line' || sd.type === 'rect' || sd.type === 'circle') {
-    drawShape(sd);
-    return;
-  }
-
-  // brush / erase
-  drawBrushStroke(sd);
-}
-
-// ─── Brush drawing ────────────────────────────────────────────────────────────
-function drawBrushStroke(sd) {
-  const { points, color, size, opacity: a = 1, brushStyle: bs = 'normal' } = sd;
-  if (!points || points.length < 1) return;
-
-  if (bs === 'soft') {
-    ctx.save();
-    for (let i = 0; i < points.length; i += Math.max(1, Math.floor(size / 4))) {
-      const p = points[i];
-      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2.5);
-      g.addColorStop(0, hexToRgba(color, a * 0.35));
-      g.addColorStop(1, hexToRgba(color, 0));
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(p.x, p.y, size * 2.5, 0, Math.PI * 2); ctx.fill();
+function renderWordChips(container, words, editable) {
+  container.innerHTML = '';
+  words.forEach((word, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'word-chip' + (editable ? ' editable' : '');
+    chip.innerHTML = esc(word) + (editable ? '<span class="edit-icon">✏️</span>' : '');
+    if (editable) {
+      chip.addEventListener('click', () => openWordModal(i, word));
     }
-    ctx.restore();
-    return;
-  }
-
-  if (bs === 'dotted') {
-    ctx.save();
-    ctx.globalAlpha = a;
-    ctx.fillStyle   = color;
-    const step = Math.max(1, Math.round(size * 1.5));
-    for (let i = 0; i < points.length; i += step) {
-      const p = points[i];
-      ctx.beginPath(); ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.restore();
-    return;
-  }
-
-  if (bs === 'calligraphy') {
-    ctx.save();
-    ctx.globalAlpha = a;
-    ctx.strokeStyle = color;
-    ctx.lineCap     = 'butt';
-    ctx.lineJoin    = 'miter';
-    for (let i = 1; i < points.length; i++) {
-      const p1 = points[i-1], p2 = points[i];
-      const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-      // Thick when horizontal, thin when vertical
-      ctx.lineWidth = Math.max(1, size * (Math.abs(Math.cos(angle - Math.PI/4)) * 0.85 + 0.15));
-      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
-    }
-    if (points.length === 1) {
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(points[0].x, points[0].y, size/4, 0, Math.PI*2); ctx.fill();
-    }
-    ctx.restore();
-    return;
-  }
-
-  // Normal / erase
-  ctx.save();
-  ctx.globalAlpha = a;
-  ctx.strokeStyle = color;
-  ctx.lineWidth   = size;
-  ctx.lineCap     = 'round';
-  ctx.lineJoin    = 'round';
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-  if (points.length === 1) {
-    ctx.fillStyle = color;
-    ctx.arc(points[0].x, points[0].y, size/2, 0, Math.PI*2); ctx.fill();
-  } else {
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-// ─── Shape drawing ────────────────────────────────────────────────────────────
-function drawShape(sd) {
-  const { type, x1, y1, x2, y2, color, size, opacity: a = 1 } = sd;
-  ctx.save();
-  ctx.globalAlpha = a;
-  ctx.strokeStyle = color;
-  ctx.lineWidth   = size;
-  ctx.lineCap     = 'round';
-  ctx.lineJoin    = 'round';
-  ctx.beginPath();
-  if (type === 'line') {
-    ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-  } else if (type === 'rect') {
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-  } else if (type === 'circle') {
-    const rx = Math.abs(x2-x1)/2, ry = Math.abs(y2-y1)/2;
-    ctx.ellipse((x1+x2)/2, (y1+y2)/2, Math.max(rx,1), Math.max(ry,1), 0, 0, Math.PI*2);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-// ─── Flood fill ───────────────────────────────────────────────────────────────
-function floodFill(sx, sy, fillHex, fillOpacity) {
-  if (sx < 0 || sx >= CANVAS_W || sy < 0 || sy >= CANVAS_H) return;
-  const imgData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
-  const data    = imgData.data;
-  const si      = (sy * CANVAS_W + sx) * 4;
-  const tR = data[si], tG = data[si+1], tB = data[si+2], tA = data[si+3];
-  const fR = parseInt(fillHex.slice(1,3),16);
-  const fG = parseInt(fillHex.slice(3,5),16);
-  const fB = parseInt(fillHex.slice(5,7),16);
-  const fA = Math.round(fillOpacity * 255);
-  if (tR===fR && tG===fG && tB===fB && tA===fA) return;
-  const match = i => data[i]===tR && data[i+1]===tG && data[i+2]===tB && data[i+3]===tA;
-  const fill  = i => { data[i]=fR; data[i+1]=fG; data[i+2]=fB; data[i+3]=fA; };
-  const visited = new Uint8Array(CANVAS_W * CANVAS_H);
-  const stack   = [sy * CANVAS_W + sx];
-  while (stack.length) {
-    const flat = stack.pop();
-    if (visited[flat]) continue;
-    const x = flat % CANVAS_W, y = (flat / CANVAS_W) | 0;
-    if (!match(flat * 4)) continue;
-    let l = x, r = x;
-    while (l > 0 && match(((y * CANVAS_W) + l - 1) * 4) && !visited[y * CANVAS_W + l - 1]) l--;
-    while (r < CANVAS_W-1 && match(((y * CANVAS_W) + r + 1) * 4) && !visited[y * CANVAS_W + r + 1]) r++;
-    for (let cx = l; cx <= r; cx++) {
-      const ci = y * CANVAS_W + cx;
-      visited[ci] = 1; fill(ci * 4);
-      if (y > 0)        { const u = (y-1)*CANVAS_W+cx; if (!visited[u] && match(u*4)) stack.push(u); }
-      if (y < CANVAS_H-1) { const d = (y+1)*CANVAS_W+cx; if (!visited[d] && match(d*4)) stack.push(d); }
-    }
-  }
-  ctx.putImageData(imgData, 0, 0);
-}
-
-// ─── Text placement ───────────────────────────────────────────────────────────
-function doText(x, y) {
-  const stage = document.getElementById('canvas-stage');
-  const wrap  = document.getElementById('canvas-wrap');
-  const wRect = wrap.getBoundingClientRect();
-  const sRect = stage.getBoundingClientRect();
-  const cRect = canvas.getBoundingClientRect();
-
-  const input = document.createElement('input');
-  input.type        = 'text';
-  input.placeholder = 'Type & press Enter';
-  const cssX = (x / CANVAS_W) * cRect.width  + (cRect.left - sRect.left);
-  const cssY = (y / CANVAS_H) * cRect.height + (cRect.top  - sRect.top);
-  const fs   = Math.max(12, Math.round(brushSize * 2.5 * (cRect.width / CANVAS_W)));
-  Object.assign(input.style, {
-    position: 'absolute', left: cssX+'px', top: cssY+'px',
-    zIndex: 50, background: 'rgba(255,255,255,0.92)',
-    border: '2px solid #7c3aed', borderRadius: '4px',
-    padding: '2px 6px', fontSize: fs+'px',
-    color: brushColor, outline: 'none', minWidth: '120px',
+    container.appendChild(chip);
   });
-  stage.appendChild(input);
-  input.focus();
+}
 
-  const commit = () => {
-    const txt = input.value.trim();
-    if (stage.contains(input)) stage.removeChild(input);
-    if (!txt || !activeSession) return;
-    pushHistory();
-    const fontSize = Math.max(12, brushSize * 2.5);
-    ctx.save();
-    ctx.globalAlpha = opacity;
-    ctx.fillStyle   = brushColor;
-    ctx.font        = `${fontSize}px sans-serif`;
-    ctx.fillText(txt, x, y);
-    if (symmetry) {
-      const w = ctx.measureText(txt).width;
-      ctx.fillText(txt, CANVAS_W - x - w, y);
-    }
-    ctx.restore();
-    const sd = { type: 'text', x, y, text: txt, fontSize, color: brushColor, opacity };
-    broadcastStroke(sd);
-    if (symmetry) {
-      const w2 = (() => { ctx.save(); ctx.font=`${fontSize}px sans-serif`; const m=ctx.measureText(txt).width; ctx.restore(); return m; })();
-      broadcastStroke({ ...sd, x: CANVAS_W - x - w2 });
-    }
-  };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') commit();
-    if (e.key === 'Escape') { if (stage.contains(input)) stage.removeChild(input); }
+function renderSmallWordChips(container, words) {
+  container.innerHTML = '';
+  words.forEach(word => {
+    const chip = document.createElement('span');
+    chip.className = 'inline-block px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300 mr-1 mb-1';
+    chip.textContent = word;
+    container.appendChild(chip);
   });
-  input.addEventListener('blur', () => { if (stage.contains(input)) stage.removeChild(input); });
-}
-
-// ─── History ──────────────────────────────────────────────────────────────────
-function pushHistory() {
-  if (!ctx) return;
-  history = history.slice(0, historyIdx + 1);
-  history.push(ctx.getImageData(0, 0, CANVAS_W, CANVAS_H));
-  if (history.length > MAX_HISTORY) { history.shift(); }
-  historyIdx = history.length - 1;
-  updateHistoryBtns();
-}
-
-function updateHistoryBtns() {
-  const u = document.getElementById('undo-btn'), r = document.getElementById('redo-btn');
-  if (u) u.disabled = historyIdx <= 0;
-  if (r) r.disabled = historyIdx >= history.length - 1;
-}
-
-async function undo() {
-  if (historyIdx <= 0) return;
-  historyIdx--;
-  ctx.putImageData(history[historyIdx], 0, 0);
-  updateHistoryBtns();
-  await syncSnapshot();
-}
-
-async function redo() {
-  if (historyIdx >= history.length - 1) return;
-  historyIdx++;
-  ctx.putImageData(history[historyIdx], 0, 0);
-  updateHistoryBtns();
-  await syncSnapshot();
-}
-
-async function syncSnapshot() {
-  if (!activeSession) return;
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
-  socket.emit('canvas-snapshot', { sessionId: activeSession.id, dataUrl });
-}
-
-// ─── Grid overlay ─────────────────────────────────────────────────────────────
-function updateGrid() {
-  document.getElementById('grid-overlay').style.display = gridOn ? 'block' : 'none';
-}
-
-// ─── Canvas event handlers ────────────────────────────────────────────────────
-function setupCanvasEvents() {
-  canvas.addEventListener('mousedown',  e => onDown(e, getCanvasPos(e)));
-  canvas.addEventListener('mousemove',  e => onMove(e, getCanvasPos(e)));
-  canvas.addEventListener('mouseup',    e => onUp(e, getCanvasPos(e)));
-  canvas.addEventListener('mouseleave', e => onUp(e, getCanvasPos(e)));
-  canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(e, getCanvasPos(e)); }, { passive: false });
-  canvas.addEventListener('touchmove',  e => { e.preventDefault(); onMove(e, getCanvasPos(e)); }, { passive: false });
-  canvas.addEventListener('touchend',   e => onUp(e, getCanvasPos(e)));
-}
-
-function onDown(e, pos) {
-  if (isFrozen()) return;
-  e.preventDefault();
-
-  if (tool === 'fill') {
-    pushHistory();
-    floodFill(pos.x, pos.y, brushColor, opacity);
-    const sd = { type: 'fill', x: pos.x, y: pos.y, color: brushColor, opacity };
-    broadcastStroke(sd);
-    if (symmetry) {
-      floodFill(CANVAS_W - pos.x, pos.y, brushColor, opacity);
-      broadcastStroke({ ...sd, x: CANVAS_W - pos.x });
-    }
-    return;
-  }
-
-  if (tool === 'text') {
-    doText(pos.x, pos.y);
-    return;
-  }
-
-  isDrawing  = true;
-  currentPoints = [pos];
-
-  if (tool === 'line' || tool === 'rect' || tool === 'circle') {
-    shapeStart  = pos;
-    previewData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
-    pushHistory();
-    return;
-  }
-
-  pushHistory();
-  // Draw first dot for brush/erase
-  const sd = buildBrushSD([pos]);
-  drawBrushStroke(sd);
-  if (symmetry) drawBrushStroke(mirrorSD(sd));
-}
-
-function onMove(e, pos) {
-  if (!isDrawing || isFrozen()) return;
-  e.preventDefault();
-
-  if (tool === 'line' || tool === 'rect' || tool === 'circle') {
-    // Preview: restore saved + draw preview (local only, not synced)
-    ctx.putImageData(previewData, 0, 0);
-    const sd = buildShapeSD(shapeStart, pos);
-    drawShape(sd);
-    if (symmetry) drawShape(mirrorShapeSD(sd));
-    return;
-  }
-
-  const prev = currentPoints[currentPoints.length - 1];
-  currentPoints.push(pos);
-  const seg = buildBrushSD([prev, pos]);
-  drawBrushStroke(seg);
-  if (symmetry) drawBrushStroke(mirrorSD(seg));
-}
-
-function onUp(e, pos) {
-  if (!isDrawing) return;
-  isDrawing = false;
-
-  if (tool === 'line' || tool === 'rect' || tool === 'circle') {
-    if (!previewData || !shapeStart) { shapeStart = null; previewData = null; return; }
-    ctx.putImageData(previewData, 0, 0);
-    const sd = buildShapeSD(shapeStart, pos);
-    drawShape(sd);
-    broadcastStroke(sd);
-    if (symmetry) {
-      const msd = mirrorShapeSD(sd);
-      drawShape(msd);
-      broadcastStroke(msd);
-    }
-    shapeStart = null; previewData = null; currentPoints = [];
-    return;
-  }
-
-  if (currentPoints.length === 0) return;
-  const sd = buildBrushSD(currentPoints);
-  broadcastStroke(sd);
-  if (symmetry && tool !== 'erase') broadcastStroke(mirrorSD(sd));
-  currentPoints = [];
-}
-
-// ─── Stroke builders ──────────────────────────────────────────────────────────
-function buildBrushSD(pts) {
-  return {
-    type: tool === 'erase' ? 'brush' : 'brush',
-    brushStyle: tool === 'erase' ? 'normal' : brushStyle,
-    points: pts,
-    color: tool === 'erase' ? CANVAS_BG : brushColor,
-    size:  tool === 'erase' ? brushSize * 3 : brushSize,
-    opacity: tool === 'erase' ? 1 : opacity
-  };
-}
-
-function buildShapeSD(p1, p2) {
-  return { type: tool, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, color: brushColor, size: brushSize, opacity };
-}
-
-function mirrorSD(sd) {
-  return { ...sd, points: sd.points.map(p => ({ x: CANVAS_W - p.x, y: p.y })) };
-}
-
-function mirrorShapeSD(sd) {
-  return { ...sd, x1: CANVAS_W - sd.x1, x2: CANVAS_W - sd.x2 };
-}
-
-function broadcastStroke(sd) {
-  if (!activeSession || !socket) return;
-  socket.emit('stroke', { sessionId: activeSession.id, strokeData: sd });
-}
-
-// ─── Load + replay ────────────────────────────────────────────────────────────
-async function loadAndReplayStrokes(sessionId) {
-  fillCanvasBg();
-  try {
-    const { strokes } = await api('GET', `/api/session/${sessionId}/strokes`);
-    for (const s of strokes) await applyStroke(s.stroke_data);
-  } catch (err) {
-    console.error('replay error:', err);
-  }
-  history = []; historyIdx = -1;
-  pushHistory();
-}
-
-function captureCanvasSnapshot() {
-  const small = document.createElement('canvas');
-  small.width = 200; small.height = 140;
-  small.getContext('2d').drawImage(canvas, 0, 0, 200, 140);
-  return small.toDataURL('image/jpeg', 0.4);
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -835,26 +351,13 @@ function renderMain() {
       badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-amber-900/50 text-amber-400 flex-shrink-0';
     }
 
-    const frozen = document.getElementById('sv-frozen-msg');
-    if (activeSession.state === 'auction') {
-      frozen.classList.remove('hidden'); canvas.classList.add('frozen');
-    } else {
-      frozen.classList.add('hidden'); canvas.classList.remove('frozen');
-    }
+    const words = getWords(activeSession);
+    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
+    renderWordChips(document.getElementById('word-chips'), words, editable);
 
-    // Show/hide creator-only elements
-    const isCreator = me && activeSession.creator_user_id === me.id;
-    const histEl    = document.getElementById('history-section');
-    const clearEl   = document.getElementById('clear-btn');
-    if (isCreator && activeSession.state === 'active') {
-      histEl.classList.remove('hidden');
-      clearEl.classList.remove('hidden');
-    } else {
-      histEl.classList.add('hidden');
-      clearEl.classList.add('hidden');
-    }
+    const hintEl = document.querySelector('#words-panel p.text-xs.text-zinc-600');
+    if (hintEl) hintEl.style.display = editable ? '' : 'none';
 
-    updateHistoryBtns();
     renderAuctionPanel();
   }
 }
@@ -863,14 +366,14 @@ function renderAuctionPanel() {
   const panel = document.getElementById('auction-panel');
   if (!activeSession || !me) { panel.innerHTML = ''; return; }
 
-  const isLeader  = me.id === activeSession.current_leader_user_id;
+  const isLeader   = me.id === activeSession.current_leader_user_id;
   const currentBid = parseInt(activeSession.current_bid) || 0;
   const minNext    = currentBid ? Math.ceil(currentBid * 1.01) : 1;
 
   if (activeSession.state === 'active') {
     panel.innerHTML = `
       <p class="text-xs text-zinc-500 uppercase tracking-wider mb-3">Auction</p>
-      <p class="text-sm text-zinc-400 mb-4">Place the first bid to start generating an AI artwork from this canvas.</p>
+      <p class="text-sm text-zinc-400 mb-4">Place the first bid to start generating an AI artwork from these words.</p>
       <div class="flex gap-2 mb-2">
         <input id="bid-input" type="number" min="1" value="1"
           class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0"
@@ -954,16 +457,12 @@ function updateCountdown(remaining) {
 }
 
 function renderLockedView(data) {
-  document.getElementById('lv-name').textContent    = data.name;
-  document.getElementById('lv-artwork').src         = data.image_url || '';
-  document.getElementById('lv-prompt').textContent  = data.prompt || '';
-  document.getElementById('lv-winner').textContent  = `Winner: @${data.winner_username || data.owner_username} · ${data.winning_bid || data.current_bid || '?'} credits`;
-  if (data.canvas_snapshot) {
-    const thumb = document.getElementById('locked-canvas-thumb');
-    const img   = new Image();
-    img.onload  = () => thumb.getContext('2d').drawImage(img, 0, 0, 200, 140);
-    img.src     = data.canvas_snapshot;
-  }
+  document.getElementById('lv-name').textContent   = data.name;
+  document.getElementById('lv-artwork').src        = data.image_url || '';
+  document.getElementById('lv-prompt').textContent = data.prompt || '';
+  document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username || '?'} · ${data.winning_bid || data.current_bid || '?'} credits`;
+  const words = getWords(data);
+  renderSmallWordChips(document.getElementById('lv-words'), words);
 }
 
 async function renderArchive() {
@@ -973,17 +472,21 @@ async function renderArchive() {
     if (!sessions.length) {
       el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>'; return;
     }
-    el.innerHTML = sessions.map(s => `
-      <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-        <img src="${s.image_url || 'https://picsum.photos/seed/default/400/300'}" alt="Generated artwork"
-          class="w-full aspect-video object-cover bg-zinc-800" loading="lazy">
-        <div class="p-3">
-          <p class="font-medium text-sm text-white truncate">${esc(s.name)}</p>
-          <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
-          ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
-          <p class="text-xs text-zinc-600 mt-1 italic truncate">${esc(s.prompt || '')}</p>
-        </div>
-      </div>`).join('');
+    el.innerHTML = sessions.map(s => {
+      const words = (s.words || '').split(',').filter(Boolean);
+      const wordChips = words.map(w => `<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300 mr-1 mb-1">${esc(w)}</span>`).join('');
+      return `
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
+            class="w-full aspect-video object-cover bg-zinc-800" loading="lazy">
+          <div class="p-3">
+            <p class="font-medium text-sm text-white truncate">${esc(s.name)}</p>
+            <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
+            ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
+            <div class="mt-2">${wordChips}</div>
+          </div>
+        </div>`;
+    }).join('');
   } catch (err) { console.error('archive error:', err); }
 }
 
@@ -1013,11 +516,60 @@ async function handleGenerate() {
   const btn = document.getElementById('generate-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
   try {
-    const snapshot = captureCanvasSnapshot();
-    await api('POST', '/api/generate', { sessionId: activeSession.id, canvasSnapshot: snapshot });
+    await api('POST', '/api/generate', { sessionId: activeSession.id });
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
     alert(err.message);
+  }
+}
+
+// ─── Word edit modal ──────────────────────────────────────────────────────────
+function openWordModal(index, currentWord) {
+  if (!activeSession) return;
+  wordEditIndex = index;
+
+  const currentBid = parseInt(activeSession.current_bid) || 0;
+  const minBid     = currentBid ? Math.ceil(currentBid * 1.01) : 1;
+
+  document.getElementById('wm-current').textContent  = currentWord;
+  document.getElementById('wm-word').value           = currentWord;
+  document.getElementById('wm-bid').value            = minBid;
+  document.getElementById('wm-bid').min              = minBid;
+  document.getElementById('wm-credits').textContent  = me ? me.credits : '?';
+  document.getElementById('wm-error').classList.add('hidden');
+  document.getElementById('word-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('wm-word').focus(), 50);
+}
+
+function closeWordModal() {
+  document.getElementById('word-modal').classList.add('hidden');
+  wordEditIndex = -1;
+}
+
+async function submitWordChange() {
+  const newWord  = document.getElementById('wm-word').value.trim();
+  const bidAmount = parseInt(document.getElementById('wm-bid').value);
+  const errEl    = document.getElementById('wm-error');
+  const submitBtn = document.getElementById('wm-submit');
+
+  errEl.classList.add('hidden');
+  if (!newWord) { errEl.textContent = 'Word cannot be empty.'; errEl.classList.remove('hidden'); return; }
+  if (newWord.length > 30) { errEl.textContent = 'Word must be 30 characters or fewer.'; errEl.classList.remove('hidden'); return; }
+  if (!bidAmount || bidAmount < 1) { errEl.textContent = 'Enter a valid bid amount.'; errEl.classList.remove('hidden'); return; }
+
+  submitBtn.disabled = true; submitBtn.textContent = 'Submitting…';
+  try {
+    const data = await api('POST', `/api/session/${activeSession.id}/change-word`, {
+      wordIndex: wordEditIndex,
+      newWord,
+      bidAmount
+    });
+    if (me) { me.credits = data.newBalance; renderHeader(); }
+    closeWordModal();
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+    submitBtn.disabled = false; submitBtn.textContent = 'Change & Bid';
   }
 }
 
@@ -1029,22 +581,9 @@ function initSocket() {
     if (activeSession) socket.emit('join-session', activeSession.id);
   });
 
-  socket.on('stroke', ({ strokeData }) => { applyStroke(strokeData); });
-
-  socket.on('canvas-cleared', () => {
-    fillCanvasBg(); history=[]; historyIdx=-1; pushHistory();
-  });
-
-  socket.on('canvas-snapshot', ({ dataUrl }) => {
-    const img = new Image();
-    img.onload = () => ctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H);
-    img.src = dataUrl;
-  });
-
   socket.on('session-created', ({ session }) => {
     activeSession = session; auctionEnded = false;
     socket.emit('join-session', session.id);
-    fillCanvasBg(); history=[]; historyIdx=-1; pushHistory();
     renderHeader(); renderMain();
   });
 
@@ -1062,6 +601,13 @@ function initSocket() {
     renderMain();
   });
 
+  socket.on('word-changed', data => {
+    if (!activeSession || activeSession.id !== data.sessionId) return;
+    activeSession.words = data.words.join(',');
+    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
+    renderWordChips(document.getElementById('word-chips'), data.words, editable);
+  });
+
   socket.on('auction-tick', ({ remaining }) => {
     if (!activeSession || activeSession.state !== 'auction') return;
     updateCountdown(remaining);
@@ -1075,8 +621,13 @@ function initSocket() {
 
   socket.on('session-locked', async data => {
     if (activeSession && activeSession.id === data.sessionId) {
-      lockedSessionData = { ...activeSession, image_url: data.imageUrl, prompt: data.prompt,
-        winner_username: data.winnerUsername, canvas_snapshot: data.canvasSnapshot };
+      lockedSessionData = {
+        ...activeSession,
+        image_url: data.imageUrl,
+        prompt: data.prompt,
+        winner_username: data.winnerUsername,
+        words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
+      };
       activeSession = null; auctionEnded = false;
     }
     renderHeader(); renderMain();
@@ -1088,123 +639,79 @@ function initSocket() {
   });
 }
 
-// ─── Toolbar ──────────────────────────────────────────────────────────────────
-function setTool(t) {
-  tool = t;
-  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-  const el = document.getElementById('tool-' + t);
-  if (el) el.classList.add('active');
-  // Show style section only for brush
-  document.getElementById('style-section').style.display = (t === 'brush') ? '' : 'none';
-  canvas.style.cursor = t === 'fill' ? 'cell' : t === 'text' ? 'text' : 'crosshair';
-  if (t === 'eraser') canvas.style.cursor = 'cell';
-}
-
-function setStyle(s) {
-  brushStyle = s;
-  document.querySelectorAll('.style-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('style-' + s).classList.add('active');
-}
-
-function initToolbar() {
-  ['brush','eraser','line','rect','circle','fill','text'].forEach(t =>
-    document.getElementById('tool-'+t)?.addEventListener('click', () => setTool(t))
-  );
-  ['normal','soft','dotted','calli'].forEach(s =>
-    document.getElementById('style-'+s)?.addEventListener('click', () => setStyle(s))
-  );
-
-  document.getElementById('color-swatch').addEventListener('click', () =>
-    document.getElementById('color-picker').click()
-  );
-  document.getElementById('color-picker').addEventListener('input', e => {
-    brushColor = e.target.value;
-    document.getElementById('color-swatch').style.background = brushColor;
-    if (tool === 'eraser') setTool('brush');
-  });
-
-  document.getElementById('opacity-slider').addEventListener('input', e => {
-    opacity = parseInt(e.target.value) / 100;
-    document.getElementById('opacity-label').textContent = e.target.value;
-  });
-  document.getElementById('size-slider').addEventListener('input', e => {
-    brushSize = parseInt(e.target.value);
-    document.getElementById('size-label').textContent = brushSize;
-  });
-
-  document.getElementById('toggle-grid').addEventListener('click', function() {
-    gridOn = !gridOn;
-    this.classList.toggle('on', gridOn);
-    updateGrid();
-  });
-  document.getElementById('toggle-sym').addEventListener('click', function() {
-    symmetry = !symmetry;
-    this.classList.toggle('on', symmetry);
-  });
-
-  document.getElementById('undo-btn').addEventListener('click', undo);
-  document.getElementById('redo-btn').addEventListener('click', redo);
-  document.getElementById('clear-btn').addEventListener('click', () => {
-    if (!activeSession || activeSession.state !== 'active') return;
-    if (!confirm('Clear canvas for everyone?')) return;
-    socket.emit('clear-canvas', activeSession.id);
-  });
-
-  // Keyboard shortcuts
-  document.addEventListener('keydown', e => {
-    if (!activeSession || isFrozen()) return;
-    if (e.target.tagName === 'INPUT') return;
-    const isCreator = me && activeSession && activeSession.creator_user_id === me.id;
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey && isCreator) { e.preventDefault(); undo(); }
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey)) && isCreator) { e.preventDefault(); redo(); }
-    if (e.key === 'b') setTool('brush');
-    if (e.key === 'e') setTool('eraser');
-    if (e.key === 'l') setTool('line');
-    if (e.key === 'r') setTool('rect');
-    if (e.key === 'c') setTool('circle');
-    if (e.key === 'f') setTool('fill');
-    if (e.key === 't') setTool('text');
-  });
-}
-
-// ─── Modal ────────────────────────────────────────────────────────────────────
+// ─── New Session Modal ────────────────────────────────────────────────────────
 function initModal() {
   const btn      = document.getElementById('new-session-btn');
   const modal    = document.getElementById('modal');
   const cancel   = document.getElementById('modal-cancel');
   const create   = document.getElementById('modal-create');
   const nameInp  = document.getElementById('modal-name');
+  const wordsInp = document.getElementById('modal-words');
+  const countEl  = document.getElementById('modal-word-count');
   const errEl    = document.getElementById('modal-error');
 
-  btn.addEventListener('click',   () => { nameInp.value=''; errEl.classList.add('hidden'); modal.classList.remove('hidden'); setTimeout(()=>nameInp.focus(),50); });
+  function updateWordCount() {
+    const words = parseInputWords(wordsInp.value);
+    const count = words.length;
+    countEl.textContent = `${count} / 10`;
+    countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
+      (count === 10 ? 'text-emerald-400' : 'text-zinc-500');
+    create.disabled = !(nameInp.value.trim() && count === 10);
+  }
+
+  wordsInp.addEventListener('input', updateWordCount);
+  nameInp.addEventListener('input', updateWordCount);
+
+  btn.addEventListener('click', () => {
+    nameInp.value = ''; wordsInp.value = '';
+    updateWordCount();
+    errEl.classList.add('hidden');
+    modal.classList.remove('hidden');
+    setTimeout(() => nameInp.focus(), 50);
+  });
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
-  modal.addEventListener('click',  e => { if (e.target===modal) modal.classList.add('hidden'); });
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
   async function doCreate() {
-    const name = nameInp.value.trim();
-    if (!name) { errEl.textContent='Please enter a session name.'; errEl.classList.remove('hidden'); return; }
-    create.disabled=true; create.textContent='Creating…'; errEl.classList.add('hidden');
+    const name  = nameInp.value.trim();
+    const words = parseInputWords(wordsInp.value);
+    if (!name) { errEl.textContent = 'Please enter a session name.'; errEl.classList.remove('hidden'); return; }
+    if (words.length !== 10) { errEl.textContent = 'Please enter exactly 10 words.'; errEl.classList.remove('hidden'); return; }
+    create.disabled = true; create.textContent = 'Creating…'; errEl.classList.add('hidden');
     try {
-      const { session } = await api('POST', '/api/session', { name });
+      const { session } = await api('POST', '/api/session', { name, words });
       activeSession = session; auctionEnded = false;
       modal.classList.add('hidden');
-      fillCanvasBg(); history=[]; historyIdx=-1; pushHistory();
       renderHeader(); renderMain();
       socket.emit('join-session', session.id);
     } catch (err) {
       errEl.textContent = err.message; errEl.classList.remove('hidden');
-    } finally { create.disabled=false; create.textContent='Create'; }
+    } finally { create.disabled = false; create.textContent = 'Create'; updateWordCount(); }
   }
   create.addEventListener('click', doCreate);
-  nameInp.addEventListener('keydown', e => { if (e.key==='Enter') doCreate(); });
+  nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') wordsInp.focus(); });
+  wordsInp.addEventListener('keydown', e => { if (e.key === 'Enter') doCreate(); });
+}
+
+// ─── Word Edit Modal init ─────────────────────────────────────────────────────
+function initWordModal() {
+  document.getElementById('wm-cancel').addEventListener('click', closeWordModal);
+  document.getElementById('word-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('word-modal')) closeWordModal();
+  });
+  document.getElementById('wm-submit').addEventListener('click', submitWordChange);
+  document.getElementById('wm-word').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('wm-bid').focus();
+  });
+  document.getElementById('wm-bid').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitWordChange();
+  });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  initCanvas();
-  setupCanvasEvents();
-  initToolbar();
   initModal();
+  initWordModal();
   initSocket();
 
   try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
@@ -1214,12 +721,11 @@ async function init() {
     activeSession = session;
     if (activeSession) {
       socket.emit('join-session', activeSession.id);
-      await loadAndReplayStrokes(activeSession.id);
       if (activeSession.state === 'auction' && activeSession.expires_at) {
         if (new Date(activeSession.expires_at) < new Date()) {
           auctionEnded = true;
         } else {
-          activeSession._remaining = Math.max(0, Math.ceil((new Date(activeSession.expires_at)-Date.now())/1000));
+          activeSession._remaining = Math.max(0, Math.ceil((new Date(activeSession.expires_at) - Date.now()) / 1000));
         }
       }
     }
