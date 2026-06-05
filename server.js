@@ -131,18 +131,20 @@ app.get('/api/session/active', async (_req, res) => {
   }
 });
 
-app.get('/api/sessions/locked', async (_req, res) => {
+app.get('/api/sessions/locked', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
-        g.image_url, g.prompt
+        g.image_url, g.prompt,
+        (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
+        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
       WHERE s.state = 'locked'
       ORDER BY s.locked_at DESC
       LIMIT 50
-    `);
+    `, [req.user.id]);
     res.json({ sessions: rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -438,6 +440,46 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+app.post('/api/session/:id/like', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+    const { rows: sessions } = await pool.query(
+      `SELECT id FROM sessions WHERE id = $1 AND state = 'locked'`,
+      [sessionId]
+    );
+    if (!sessions.length) return res.status(404).json({ error: 'Artwork not found' });
+
+    // Toggle: try to insert; if the like already existed, remove it instead.
+    const { rowCount } = await pool.query(
+      `INSERT INTO artwork_likes (session_id, user_id, username) VALUES ($1, $2, $3)
+       ON CONFLICT (session_id, user_id) DO NOTHING`,
+      [sessionId, req.user.id, req.user.username]
+    );
+
+    let liked;
+    if (rowCount === 0) {
+      await pool.query(
+        `DELETE FROM artwork_likes WHERE session_id = $1 AND user_id = $2`,
+        [sessionId, req.user.id]
+      );
+      liked = false;
+    } else {
+      liked = true;
+    }
+
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*)::int AS like_count FROM artwork_likes WHERE session_id = $1`,
+      [sessionId]
+    );
+
+    res.json({ liked, likeCount: countRows[0].like_count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   socket.on('join-session', (sessionId) => {
@@ -525,6 +567,16 @@ async function start() {
       prompt TEXT,
       canvas_snapshot TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artwork_likes (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL,
+      username VARCHAR(255) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (session_id, user_id)
     )
   `);
 
