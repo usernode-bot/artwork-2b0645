@@ -149,8 +149,38 @@ app.get('/api/sessions/locked', async (_req, res) => {
   }
 });
 
-// Proxy the generated artwork so the browser can save it (the image is hosted
-// on a remote origin, so a direct <a download> would be blocked cross-origin).
+// Highest-resolution square we request from the upstream image source.
+// (picsum.photos serves up to 5000px; 2048 is a high-res JPEG that stays
+// well within that limit and keeps the proxied download reasonably sized.)
+const DOWNLOAD_IMAGE_SIZE = 2048;
+
+// Rewrite the stored image URL to request the largest available JPEG.
+// picsum.photos takes the size in the path and a `.jpg` suffix forces JPEG
+// output, e.g. https://picsum.photos/seed/<seed>/2048/2048.jpg
+function toHighResJpegUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.endsWith('picsum.photos')) {
+      // picsum paths are /seed/<seed>/<w>/<h>, /id/<id>/<w>/<h>, or /<w>/<h>
+      // (optionally with a .jpg/.webp suffix). Keep the image selector
+      // (seed/id) intact and only swap the trailing dimensions, so we fetch
+      // the SAME artwork at a higher resolution rather than a different image.
+      const parts = u.pathname.split('/').filter(Boolean);
+      let base = [];
+      const marker = parts.findIndex(p => p === 'seed' || p === 'id');
+      if (marker !== -1 && parts[marker + 1] !== undefined) {
+        base = parts.slice(0, marker + 2); // keep ['seed', '<seed>'] or ['id', '<id>']
+      }
+      u.pathname = '/' + base.concat([String(DOWNLOAD_IMAGE_SIZE), `${DOWNLOAD_IMAGE_SIZE}.jpg`]).join('/');
+      return u.toString();
+    }
+  } catch { /* fall through to original URL */ }
+  return url;
+}
+
+// Proxy the generated artwork so the browser can save it as a high-resolution
+// JPEG (the image is hosted on a remote origin, so a direct <a download> would
+// be blocked cross-origin).
 app.get('/api/session/:id/image/download', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id);
@@ -168,16 +198,14 @@ app.get('/api/session/:id/image/download', async (req, res) => {
     const artwork = rows[0];
     if (!artwork?.image_url) return res.status(404).json({ error: 'Artwork not found' });
 
-    const upstream = await fetch(artwork.image_url);
+    const upstream = await fetch(toHighResJpegUrl(artwork.image_url));
     if (!upstream.ok) return res.status(502).json({ error: 'Failed to fetch image' });
 
-    const contentType = upstream.headers.get('content-type') || 'image/jpeg';
-    const ext = contentTypeToExt(contentType, artwork.image_url);
     const safeName = String(artwork.name || 'artwork').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60) || 'artwork';
-    const filename = `${safeName}.${ext}`;
+    const filename = `${safeName}.jpg`;
 
     const buf = Buffer.from(await upstream.arrayBuffer());
-    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Type', 'image/jpeg');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Length', buf.length);
     res.send(buf);
@@ -185,18 +213,6 @@ app.get('/api/session/:id/image/download', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-function contentTypeToExt(contentType, url) {
-  const map = {
-    'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
-    'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
-    'image/avif': 'avif', 'image/bmp': 'bmp',
-  };
-  const base = (contentType || '').split(';')[0].trim().toLowerCase();
-  if (map[base]) return map[base];
-  const m = String(url || '').match(/\.([a-z0-9]{2,5})(?:[?#]|$)/i);
-  return m ? m[1].toLowerCase() : 'jpg';
-}
 
 app.post('/api/session', async (req, res) => {
   try {

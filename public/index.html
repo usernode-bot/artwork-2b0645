@@ -491,6 +491,7 @@ async function downloadArtwork(sessionId, btn) {
     }
     const blob = await res.blob();
     const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `artwork-${sessionId}.jpg`;
+    // Server proxies the artwork as a high-resolution JPEG.
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
