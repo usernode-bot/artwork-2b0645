@@ -149,6 +149,71 @@ app.get('/api/sessions/locked', async (_req, res) => {
   }
 });
 
+// Highest-resolution square we request from the upstream image source.
+// (picsum.photos serves up to 5000px; 2048 is a high-res JPEG that stays
+// well within that limit and keeps the proxied download reasonably sized.)
+const DOWNLOAD_IMAGE_SIZE = 2048;
+
+// Rewrite the stored image URL to request the largest available JPEG.
+// picsum.photos takes the size in the path and a `.jpg` suffix forces JPEG
+// output, e.g. https://picsum.photos/seed/<seed>/2048/2048.jpg
+function toHighResJpegUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.endsWith('picsum.photos')) {
+      // picsum paths are /seed/<seed>/<w>/<h>, /id/<id>/<w>/<h>, or /<w>/<h>
+      // (optionally with a .jpg/.webp suffix). Keep the image selector
+      // (seed/id) intact and only swap the trailing dimensions, so we fetch
+      // the SAME artwork at a higher resolution rather than a different image.
+      const parts = u.pathname.split('/').filter(Boolean);
+      let base = [];
+      const marker = parts.findIndex(p => p === 'seed' || p === 'id');
+      if (marker !== -1 && parts[marker + 1] !== undefined) {
+        base = parts.slice(0, marker + 2); // keep ['seed', '<seed>'] or ['id', '<id>']
+      }
+      u.pathname = '/' + base.concat([String(DOWNLOAD_IMAGE_SIZE), `${DOWNLOAD_IMAGE_SIZE}.jpg`]).join('/');
+      return u.toString();
+    }
+  } catch { /* fall through to original URL */ }
+  return url;
+}
+
+// Proxy the generated artwork so the browser can save it as a high-resolution
+// JPEG (the image is hosted on a remote origin, so a direct <a download> would
+// be blocked cross-origin).
+app.get('/api/session/:id/image/download', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+    const { rows } = await pool.query(
+      `SELECT s.name, g.image_url
+       FROM generated_artworks g
+       JOIN sessions s ON s.id = g.session_id
+       WHERE g.session_id = $1
+       ORDER BY g.created_at DESC
+       LIMIT 1`,
+      [sessionId]
+    );
+    const artwork = rows[0];
+    if (!artwork?.image_url) return res.status(404).json({ error: 'Artwork not found' });
+
+    const upstream = await fetch(toHighResJpegUrl(artwork.image_url));
+    if (!upstream.ok) return res.status(502).json({ error: 'Failed to fetch image' });
+
+    const safeName = String(artwork.name || 'artwork').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60) || 'artwork';
+    const filename = `${safeName}.jpg`;
+
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buf.length);
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/session', async (req, res) => {
   try {
     const { name, words: rawWords } = req.body;
