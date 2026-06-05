@@ -149,6 +149,55 @@ app.get('/api/sessions/locked', async (_req, res) => {
   }
 });
 
+// Proxy the generated artwork so the browser can save it (the image is hosted
+// on a remote origin, so a direct <a download> would be blocked cross-origin).
+app.get('/api/session/:id/image/download', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+    const { rows } = await pool.query(
+      `SELECT s.name, g.image_url
+       FROM generated_artworks g
+       JOIN sessions s ON s.id = g.session_id
+       WHERE g.session_id = $1
+       ORDER BY g.created_at DESC
+       LIMIT 1`,
+      [sessionId]
+    );
+    const artwork = rows[0];
+    if (!artwork?.image_url) return res.status(404).json({ error: 'Artwork not found' });
+
+    const upstream = await fetch(artwork.image_url);
+    if (!upstream.ok) return res.status(502).json({ error: 'Failed to fetch image' });
+
+    const contentType = upstream.headers.get('content-type') || 'image/jpeg';
+    const ext = contentTypeToExt(contentType, artwork.image_url);
+    const safeName = String(artwork.name || 'artwork').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60) || 'artwork';
+    const filename = `${safeName}.${ext}`;
+
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buf.length);
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function contentTypeToExt(contentType, url) {
+  const map = {
+    'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+    'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
+    'image/avif': 'avif', 'image/bmp': 'bmp',
+  };
+  const base = (contentType || '').split(';')[0].trim().toLowerCase();
+  if (map[base]) return map[base];
+  const m = String(url || '').match(/\.([a-z0-9]{2,5})(?:[?#]|$)/i);
+  return m ? m[1].toLowerCase() : 'jpg';
+}
+
 app.post('/api/session', async (req, res) => {
   try {
     const { name, words: rawWords } = req.body;
