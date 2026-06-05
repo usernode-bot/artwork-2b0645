@@ -199,6 +199,10 @@
           <div>
             <p class="text-xs text-zinc-500 mb-2">Generated Artwork</p>
             <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-lg aspect-square object-cover bg-zinc-800">
+            <button id="lv-download"
+              class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+              ⬇️ Download image
+            </button>
           </div>
         </div>
         <p class="mt-3 text-xs text-zinc-500 italic" id="lv-prompt"></p>
@@ -463,6 +467,50 @@ function renderLockedView(data) {
   document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username || '?'} · ${data.winning_bid || data.current_bid || '?'} credits`;
   const words = getWords(data);
   renderSmallWordChips(document.getElementById('lv-words'), words);
+
+  const dlBtn = document.getElementById('lv-download');
+  if (dlBtn) {
+    const hasImage = !!data.image_url;
+    dlBtn.disabled = !hasImage;
+    dlBtn.onclick = hasImage ? () => downloadArtwork(data.id, dlBtn) : null;
+  }
+}
+
+// Download the generated artwork via the auth-gated server proxy, which
+// streams the remote image back with a Content-Disposition filename.
+async function downloadArtwork(sessionId, btn) {
+  if (!sessionId) return;
+  const original = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⬇️ Downloading…'; }
+  try {
+    const res = await fetch(`/api/session/${sessionId}/image/download`, { headers: { 'x-usernode-token': token } });
+    if (!res.ok) {
+      let msg = 'Download failed';
+      try { msg = (await res.json()).error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `artwork-${sessionId}.jpg`;
+    // Server proxies the artwork as a high-resolution JPEG.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(err.message || 'Download failed');
+  } finally {
+    if (btn && original !== null) { btn.disabled = false; btn.innerHTML = original; }
+  }
+}
+
+function filenameFromDisposition(header) {
+  if (!header) return null;
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
 async function renderArchive() {
@@ -489,9 +537,14 @@ async function renderArchive() {
               <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
               <span class="like-count tabular-nums">${s.like_count || 0}</span>
             </button>
+            ${s.image_url ? `<button data-download="${esc(s.id)}"
+              class="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors">⬇️ Download</button>` : ''}
           </div>
         </div>`;
     }).join('');
+    el.querySelectorAll('button[data-download]').forEach(btn => {
+      btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
+    });
   } catch (err) { console.error('archive error:', err); }
 }
 
