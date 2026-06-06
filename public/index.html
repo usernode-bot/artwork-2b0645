@@ -130,6 +130,9 @@
     ::-webkit-scrollbar { width: 5px; }
     ::-webkit-scrollbar-track { background: #18181b; }
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+    #lightbox { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
+    #lightbox.lb-open { opacity: 1; pointer-events: auto; }
+    #lightbox-img.lb-zoomed { transform: scale(2); cursor: zoom-out !important; }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
@@ -198,7 +201,7 @@
           </div>
           <div>
             <p class="text-xs text-zinc-500 mb-2">Generated Artwork</p>
-            <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-lg aspect-square object-cover bg-zinc-800">
+            <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-lg aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
             <button id="lv-download"
               class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
               ⬇️ Download image
@@ -262,6 +265,21 @@
       </div>
     </div>
   </div>
+
+<!-- Lightbox -->
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image lightbox"
+  class="fixed inset-0 z-50 overflow-auto"
+  style="background: rgba(0,0,0,0.87)">
+  <div class="min-h-full flex items-center justify-center p-4">
+    <img id="lightbox-img" src="" alt="Full-size artwork"
+      class="max-w-full object-contain rounded-lg shadow-2xl transition-transform duration-200"
+      style="transform-origin: center; cursor: zoom-in; max-height: calc(100vh - 2rem)">
+  </div>
+  <button id="lightbox-close" aria-label="Close"
+    class="fixed top-4 right-4 w-11 h-11 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-600 text-white text-2xl font-normal transition-colors border border-zinc-700">
+    &times;
+  </button>
+</div>
 
 <script>
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -507,6 +525,49 @@ async function downloadArtwork(sessionId, btn) {
   }
 }
 
+// ─── Lightbox ─────────────────────────────────────────────────────────────────
+let _lbEscHandler = null;
+
+function openLightbox(src) {
+  const lb  = document.getElementById('lightbox');
+  const img = document.getElementById('lightbox-img');
+  img.src = src;
+  img.classList.remove('lb-zoomed');
+  img.style.cursor = 'zoom-in';
+  lb.scrollTop = 0;
+  lb.classList.add('lb-open');
+  document.body.style.overflow = 'hidden';
+  document.getElementById('lightbox-close').focus();
+  _lbEscHandler = e => { if (e.key === 'Escape') closeLightbox(); };
+  document.addEventListener('keydown', _lbEscHandler);
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('lb-open');
+  document.body.style.overflow = '';
+  if (_lbEscHandler) {
+    document.removeEventListener('keydown', _lbEscHandler);
+    _lbEscHandler = null;
+  }
+}
+
+function initLightbox() {
+  document.getElementById('lv-artwork').addEventListener('click', () => {
+    const src = document.getElementById('lv-artwork').src;
+    if (src) openLightbox(src);
+  });
+  document.getElementById('lightbox').addEventListener('click', e => {
+    if (!e.target.closest('#lightbox-img') && !e.target.closest('#lightbox-close')) closeLightbox();
+  });
+  document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+  document.getElementById('lightbox-img').addEventListener('click', e => {
+    e.stopPropagation();
+    const img = e.currentTarget;
+    const zoomed = img.classList.toggle('lb-zoomed');
+    img.style.cursor = zoomed ? 'zoom-out' : 'zoom-in';
+  });
+}
+
 function filenameFromDisposition(header) {
   if (!header) return null;
   const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
@@ -526,7 +587,7 @@ async function renderArchive() {
       return `
         <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
           <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800" loading="lazy">
+            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
           <div class="p-3">
             <p class="font-medium text-sm text-white truncate">${esc(s.name)}</p>
             <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
@@ -803,9 +864,11 @@ function initWordModal() {
 async function init() {
   initModal();
   initWordModal();
+  initLightbox();
   initSocket();
 
   document.getElementById('archive-list').addEventListener('click', e => {
+    if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
     const btn = e.target.closest('.like-btn');
     if (btn) handleLike(btn);
   });
