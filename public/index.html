@@ -217,7 +217,13 @@
 
   <!-- Archive -->
   <div class="px-4 pb-8">
-    <h2 class="text-xs font-semibold text-zinc-600 uppercase tracking-wider mb-3">Session Archive</h2>
+    <div class="flex items-center justify-between gap-4 mb-3">
+      <h2 class="text-xs font-semibold text-zinc-600 uppercase tracking-wider">Session Archive</h2>
+      <div id="archive-cols" class="flex items-center gap-1.5">
+        <span class="text-xs text-zinc-600 mr-1 hidden sm:inline">Columns</span>
+        <div id="archive-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
+      </div>
+    </div>
     <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
     </div>
@@ -290,6 +296,66 @@ const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
 let wordEditIndex = -1;
 let socket;
+
+// ─── Archive column preference ──────────────────────────────────────────────────
+const ARCHIVE_COLS_KEY = 'archive-columns';
+const ARCHIVE_COL_OPTIONS = ['auto', '1', '2', '3', '4', '5'];
+let archiveCols = 'auto'; // in-memory fallback when localStorage is unavailable
+
+function loadArchiveCols() {
+  try {
+    const v = localStorage.getItem(ARCHIVE_COLS_KEY);
+    if (ARCHIVE_COL_OPTIONS.includes(v)) { archiveCols = v; return; }
+    if (v !== null) localStorage.removeItem(ARCHIVE_COLS_KEY); // corrupt/invalid → reset
+  } catch (e) { /* storage unavailable — use in-memory default */ }
+  archiveCols = 'auto';
+}
+
+function setArchiveCols(v) {
+  if (!ARCHIVE_COL_OPTIONS.includes(v)) v = 'auto';
+  archiveCols = v;
+  try { localStorage.setItem(ARCHIVE_COLS_KEY, v); } catch (e) { /* keep in-memory */ }
+  applyArchiveCols();
+}
+
+// Clamp a user-chosen column count to something usable at the current viewport.
+function effectiveArchiveCols() {
+  if (archiveCols === 'auto') return null;
+  let n = parseInt(archiveCols, 10);
+  const w = window.innerWidth;
+  if (w < 640) n = Math.min(n, 2);
+  else if (w < 1024) n = Math.min(n, 3);
+  return n;
+}
+
+function applyArchiveCols() {
+  const el = document.getElementById('archive-list');
+  if (el) {
+    const n = effectiveArchiveCols();
+    // 'auto' → clear inline style so the responsive grid-cols-* classes resume.
+    el.style.gridTemplateColumns = n === null ? '' : `repeat(${n}, minmax(0, 1fr))`;
+  }
+  renderArchiveColsControl();
+}
+
+function renderArchiveColsControl() {
+  const group = document.getElementById('archive-cols-group');
+  if (!group) return;
+  group.innerHTML = ARCHIVE_COL_OPTIONS.map(opt => {
+    const active = opt === archiveCols;
+    const label = opt === 'auto' ? 'Auto' : opt;
+    return `<button type="button" data-archive-col="${opt}"
+      class="px-2 py-1 rounded-md text-xs font-medium transition-colors ${active
+        ? 'bg-violet-600 text-white'
+        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">${label}</button>`;
+  }).join('');
+}
+
+let _archiveResizeTimer;
+function onArchiveResize() {
+  clearTimeout(_archiveResizeTimer);
+  _archiveResizeTimer = setTimeout(applyArchiveCols, 150);
+}
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -579,7 +645,8 @@ async function renderArchive() {
     const { sessions } = await api('GET', '/api/sessions/locked');
     const el = document.getElementById('archive-list');
     if (!sessions.length) {
-      el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>'; return;
+      el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
+      applyArchiveCols(); return;
     }
     el.innerHTML = sessions.map(s => {
       const words = (s.words || '').split(',').filter(Boolean);
@@ -606,6 +673,7 @@ async function renderArchive() {
     el.querySelectorAll('button[data-download]').forEach(btn => {
       btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
     });
+    applyArchiveCols();
   } catch (err) { console.error('archive error:', err); }
 }
 
@@ -872,6 +940,14 @@ async function init() {
     const btn = e.target.closest('.like-btn');
     if (btn) handleLike(btn);
   });
+
+  loadArchiveCols();
+  document.getElementById('archive-cols-group').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-archive-col]');
+    if (btn) setArchiveCols(btn.getAttribute('data-archive-col'));
+  });
+  window.addEventListener('resize', onArchiveResize);
+  applyArchiveCols();
 
   try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
 
