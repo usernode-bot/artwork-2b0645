@@ -206,6 +206,16 @@
               class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
               ⬇️ Download image
             </button>
+            <div class="mt-2 flex gap-2">
+              <button id="lv-share-twitter"
+                class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                𝕏 Share
+              </button>
+              <button id="lv-share-facebook"
+                class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                f Share
+              </button>
+            </div>
           </div>
         </div>
         <p class="mt-3 text-xs text-zinc-500 italic" id="lv-prompt"></p>
@@ -492,6 +502,15 @@ function renderLockedView(data) {
     dlBtn.disabled = !hasImage;
     dlBtn.onclick = hasImage ? () => downloadArtwork(data.id, dlBtn) : null;
   }
+
+  const hasImage = !!data.image_url;
+  const shareText = buildShareText(data);
+  [['lv-share-twitter', 'twitter'], ['lv-share-facebook', 'facebook']].forEach(([id, network]) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !hasImage;
+    btn.onclick = hasImage ? () => openShare(network, data.image_url, shareText) : null;
+  });
 }
 
 // Download the generated artwork via the auth-gated server proxy, which
@@ -599,7 +618,13 @@ async function renderArchive() {
               <span class="like-count tabular-nums">${s.like_count || 0}</span>
             </button>
             ${s.image_url ? `<button data-download="${esc(s.id)}"
-              class="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors">⬇️ Download</button>` : ''}
+              class="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors">⬇️ Download</button>
+            <div class="mt-2 flex gap-2">
+              <button type="button" class="share-btn flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors"
+                data-share="twitter" data-image="${esc(s.image_url)}" data-text="${esc(buildShareText(s))}">𝕏 Share</button>
+              <button type="button" class="share-btn flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors"
+                data-share="facebook" data-image="${esc(s.image_url)}" data-text="${esc(buildShareText(s))}">f Share</button>
+            </div>` : ''}
           </div>
         </div>`;
     }).join('');
@@ -611,6 +636,39 @@ async function renderArchive() {
 
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Sharing ────────────────────────────────────────────────────────────────
+// Build descriptive share text from an artwork's name + its 10 words.
+// `artwork.words` may be an array (locked view) or a comma string (archive).
+function buildShareText(artwork) {
+  const name = (artwork.name || 'Untitled').trim();
+  const words = Array.isArray(artwork.words)
+    ? artwork.words
+    : String(artwork.words || '').split(',');
+  const wordList = words.map(w => w.trim()).filter(Boolean).join(', ');
+  let text = `"${name}" — AI artwork from 10 words`;
+  if (wordList) text += `: ${wordList}`;
+  text += ' · Made on Artwork Workspace';
+  return text;
+}
+
+// Build network share-dialog URLs from the artwork's PUBLIC image URL.
+// Never share location.href / the ?token= param — that would leak the JWT.
+function shareUrls(imageUrl, text) {
+  const u = encodeURIComponent(imageUrl);
+  return {
+    // Facebook's sharer.php only honors the `u` (URL) param; text is ignored.
+    twitter: `https://twitter.com/intent/tweet?url=${u}&text=${encodeURIComponent(text)}`,
+    facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
+  };
+}
+
+function openShare(network, imageUrl, text) {
+  if (!imageUrl) return;
+  const urls = shareUrls(imageUrl, text);
+  const url = urls[network];
+  if (url) window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -869,6 +927,8 @@ async function init() {
 
   document.getElementById('archive-list').addEventListener('click', e => {
     if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
+    const sb = e.target.closest('.share-btn');
+    if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
     const btn = e.target.closest('.like-btn');
     if (btn) handleLike(btn);
   });
