@@ -5,6 +5,20 @@
       "description": "Replicate API key for AI image generation (wired up later to replace stub)",
       "required": false,
       "sensitive": true
+    },
+    {
+      "key": "GENERATE_FEE_RECIPIENT",
+      "description": "ut1… wallet address that receives the artwork-generation fee",
+      "required": true,
+      "private": false,
+      "staging_default": "ut1_staging_placeholder"
+    },
+    {
+      "key": "GENERATE_FEE_AMOUNT",
+      "description": "Minimum generation fee in integer token units (e.g. '10'). Set to '0' in staging to skip payment.",
+      "required": true,
+      "private": false,
+      "staging_default": "0"
     }
   ]
 }

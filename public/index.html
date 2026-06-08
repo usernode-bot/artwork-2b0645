@@ -68,6 +68,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
   <style>
     #session-view {
       position: fixed;
@@ -294,6 +295,7 @@ const token  = params.get('token') || '';
 const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
+let feeRecipient = null, feeAmount = '0';
 let wordEditIndex = -1;
 let socket;
 
@@ -482,9 +484,15 @@ function renderAuctionPanel() {
 
     let actionHtml = '';
     if (auctionEnded) {
-      actionHtml = isLeader
-        ? `<button id="generate-btn" class="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold">✨ Generate Artwork</button>`
-        : `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
+      if (isLeader) {
+        if (!me.usernode_pubkey) {
+          actionHtml = `<p class="text-sm text-zinc-400 text-center py-2">Link your wallet in Usernode to generate artwork.</p>`;
+        } else {
+          actionHtml = `<button id="generate-btn" class="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold">✨ Generate Artwork</button>`;
+        }
+      } else {
+        actionHtml = `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
+      }
     } else if (isLeader) {
       actionHtml = `
         <div class="bg-violet-900/30 border border-violet-700/50 rounded-lg p-3 text-center mb-2">
@@ -701,9 +709,51 @@ async function handleBid() {
 
 async function handleGenerate() {
   const btn = document.getElementById('generate-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+
+  if (feeAmount === '0') {
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+    try {
+      await api('POST', '/api/generate', { sessionId: activeSession.id });
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
+      alert(err.message);
+    }
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Preparing payment…'; }
+
+  let sendResult;
   try {
-    await api('POST', '/api/generate', { sessionId: activeSession.id });
+    sendResult = await window.sendTransaction(
+      feeRecipient,
+      Number(feeAmount),
+      'artwork-generation',
+      {
+        confirmTitle: 'Generate Artwork',
+        confirmSubtitle: 'Pay the generation fee to continue',
+        waitForInclusion: true
+      }
+    );
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
+    alert(err.message || 'Payment failed');
+    return;
+  }
+
+  if (sendResult.error) {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
+    alert(sendResult.error);
+    return;
+  }
+
+  console.log('sendResult.tx:', sendResult.tx);
+  const txHash = sendResult.tx?.hash || sendResult.tx?.tx_hash || sendResult.tx?.id;
+
+  if (btn) { btn.textContent = 'Confirming & generating…'; }
+
+  try {
+    await api('POST', '/api/generate', { sessionId: activeSession.id, txHash });
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
     alert(err.message);
@@ -950,6 +1000,11 @@ async function init() {
   applyArchiveCols();
 
   try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
+  try {
+    const config = await api('GET', '/api/config');
+    feeRecipient = config.feeRecipient;
+    feeAmount = config.feeAmount;
+  } catch(e) { console.error('config error:', e); }
 
   try {
     const { session } = await api('GET', '/api/session/active');

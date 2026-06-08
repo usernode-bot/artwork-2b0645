@@ -11,8 +11,11 @@ const io = new Server(server);
 const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
+const GENERATE_FEE_RECIPIENT = process.env.GENERATE_FEE_RECIPIENT;
+const GENERATE_FEE_AMOUNT = process.env.GENERATE_FEE_AMOUNT || '0';
+const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
-const PUBLIC_API_PATHS = new Set(['/health']);
+const PUBLIC_API_PATHS = new Set(['/health', '/api/config']);
 const PUBLIC_PREFIXES = ['/explorer-api/'];
 
 app.use(express.json({ limit: '5mb' }));
@@ -102,14 +105,72 @@ function parseWords(input) {
   return String(input || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
 }
 
+// ─── Payment verification ─────────────────────────────────────────────────────
+async function verifyGenerationPayment(txHash, expectedSender) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  let tx;
+  try {
+    const resp = await fetch(
+      `http://localhost:${port}/explorer-api/transactions/${txHash}`,
+      { signal: controller.signal }
+    );
+    if (resp.status === 404) {
+      const err = new Error('Transaction not found');
+      err.status = 400;
+      throw err;
+    }
+    if (!resp.ok) {
+      const err = new Error('Explorer API error');
+      err.status = 400;
+      throw err;
+    }
+    tx = await resp.json();
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      const e = new Error('Explorer API timed out');
+      e.status = 504;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (!tx || !tx.confirmed) {
+    const err = new Error('Transaction not confirmed');
+    err.status = 400;
+    throw err;
+  }
+  if ((tx.from || '').toLowerCase() !== (expectedSender || '').toLowerCase()) {
+    const err = new Error('Sender does not match your linked wallet');
+    err.status = 403;
+    throw err;
+  }
+  if ((tx.to || '').toLowerCase() !== (GENERATE_FEE_RECIPIENT || '').toLowerCase()) {
+    const err = new Error('Transaction sent to wrong recipient');
+    err.status = 400;
+    throw err;
+  }
+  if (Number(tx.amount) < Number(GENERATE_FEE_AMOUNT)) {
+    const err = new Error('Insufficient payment amount');
+    err.status = 400;
+    throw err;
+  }
+  return { amount: String(tx.amount) };
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+app.get('/api/config', (_req, res) => {
+  res.json({ feeRecipient: GENERATE_FEE_RECIPIENT, feeAmount: GENERATE_FEE_AMOUNT });
+});
 
 app.get('/api/me', async (req, res) => {
   try {
     await ensureUserCredits(req.user.id, req.user.username);
     const { rows } = await pool.query('SELECT balance FROM user_credits WHERE user_id = $1', [req.user.id]);
-    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 1000 });
+    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 1000, usernode_pubkey: req.user.usernode_pubkey });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -458,7 +519,7 @@ app.post('/api/session/:id/change-word', async (req, res) => {
 
 app.post('/api/generate', async (req, res) => {
   try {
-    const { sessionId } = req.body;
+    const { sessionId, txHash } = req.body;
 
     const { rows: sessions } = await pool.query(
       `SELECT * FROM sessions WHERE id = $1 AND state = 'auction'`,
@@ -483,13 +544,53 @@ app.post('/api/generate', async (req, res) => {
     const prompt = `A beautiful artwork inspired by: ${wordsStr}`;
     const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
 
-    await pool.query(
-      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, req.user.id, req.user.username, imageUrl, prompt, null]
-    );
+    if (!IS_STAGING) {
+      if (!txHash) return res.status(400).json({ error: 'txHash is required' });
 
-    await pool.query(`UPDATE sessions SET state = 'locked', locked_at = NOW() WHERE id = $1`, [sessionId]);
+      let paymentAmount;
+      try {
+        const result = await verifyGenerationPayment(txHash, req.user.usernode_pubkey);
+        paymentAmount = result.amount;
+      } catch (err) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        try {
+          await client.query(
+            `INSERT INTO generation_payments (session_id, user_id, tx_hash, amount) VALUES ($1, $2, $3, $4)`,
+            [sessionId, req.user.id, txHash, paymentAmount]
+          );
+        } catch (err) {
+          if (err.code === '23505') {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'Transaction already used' });
+          }
+          throw err;
+        }
+        await client.query(
+          `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [sessionId, req.user.id, req.user.username, imageUrl, prompt, null]
+        );
+        await client.query(`UPDATE sessions SET state = 'locked', locked_at = NOW() WHERE id = $1`, [sessionId]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      await pool.query(
+        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [sessionId, req.user.id, req.user.username, imageUrl, prompt, null]
+      );
+      await pool.query(`UPDATE sessions SET state = 'locked', locked_at = NOW() WHERE id = $1`, [sessionId]);
+    }
 
     io.emit('session-locked', {
       sessionId,
@@ -644,6 +745,17 @@ async function start() {
       UNIQUE (session_id, user_id)
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS generation_payments (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      user_id INTEGER NOT NULL,
+      tx_hash TEXT NOT NULL UNIQUE,
+      amount TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`COMMENT ON TABLE generation_payments IS 'staging:private'`);
 
   // Resume active auction if server restarted
   const { rows: activeAuctions } = await pool.query(`
