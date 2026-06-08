@@ -138,13 +138,13 @@
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
 
   <!-- Header -->
-  <header id="app-header" class="sticky top-0 z-20 bg-zinc-900 border-b border-zinc-800 px-4 flex items-center justify-between gap-4" style="height:48px;flex-shrink:0">
-    <h1 class="text-base font-bold tracking-tight">🎨 Artwork Workspace</h1>
-    <div class="flex items-center gap-3">
+  <header id="app-header" class="sticky top-0 z-20 bg-zinc-900 border-b border-zinc-800 px-4 py-2 flex items-center justify-between gap-6 min-h-[48px]" style="flex-shrink:0">
+    <h1 class="text-base font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork Workspace</h1>
+    <div class="flex items-center flex-shrink-0 gap-4">
       <span id="credit-display" class="text-sm font-mono text-violet-300 bg-violet-950/50 px-2.5 py-1 rounded-full">💎 --</span>
       <span id="username-display" class="text-sm text-zinc-400"></span>
       <button id="new-session-btn"
-        class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors"
+        class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors mr-2"
         disabled>+ New Session</button>
     </div>
   </header>
