@@ -156,7 +156,11 @@
     <div id="no-session-view" class="flex flex-col items-center justify-center py-20 text-zinc-600">
       <div class="text-5xl mb-4">🖼️</div>
       <p class="text-lg font-medium text-zinc-400 mb-1">No active session</p>
-      <p class="text-sm">Create a new session to start a collaborative artwork.</p>
+      <p class="text-sm mb-7">Create a new session to start a collaborative artwork.</p>
+      <button id="cta-create-artwork"
+        class="inline-flex items-center gap-2 px-8 py-4 bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-lg font-semibold rounded-xl shadow-lg shadow-violet-900/40 hover:shadow-violet-700/50 transition-all hover:-translate-y-0.5">
+        🎨 Create Artwork
+      </button>
     </div>
 
     <!-- Active / Auction session (full-screen fixed overlay) -->
@@ -939,6 +943,12 @@ async function init() {
     if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
     const btn = e.target.closest('.like-btn');
     if (btn) handleLike(btn);
+  });
+
+  // Landing-screen CTA — opens the same New Session flow as the header button.
+  document.getElementById('cta-create-artwork').addEventListener('click', () => {
+    const headerBtn = document.getElementById('new-session-btn');
+    if (!headerBtn.disabled) headerBtn.click();
   });
 
   loadArchiveCols();
