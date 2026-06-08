@@ -102,6 +102,194 @@ function parseWords(input) {
   return String(input || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
 }
 
+// ─── Creative Prompts ───────────────────────────────────────────────────────────
+// Rule-based suggestion generator. Derives a personal word-frequency map from the
+// signed-in user's activity (sessions created / bid on / won / liked), blends in a
+// curated word bank for freshness, and falls back to app-wide popular words and a
+// built-in seed bank so the endpoint always returns 10 valid, submittable words.
+
+const WORD_BANK = {
+  nature:   ['ocean', 'forest', 'mountain', 'river', 'storm', 'meadow', 'desert', 'glacier', 'canyon', 'willow', 'ember', 'tide'],
+  cosmic:   ['nebula', 'comet', 'eclipse', 'galaxy', 'starlight', 'void', 'orbit', 'aurora', 'cosmos', 'meteor'],
+  emotion:  ['longing', 'serene', 'euphoria', 'melancholy', 'wonder', 'dread', 'tender', 'restless', 'solace', 'reverie'],
+  material: ['glass', 'marble', 'silk', 'iron', 'obsidian', 'velvet', 'copper', 'crystal', 'porcelain', 'amber'],
+  color:    ['crimson', 'indigo', 'golden', 'emerald', 'violet', 'scarlet', 'azure', 'ivory', 'onyx', 'teal'],
+  motion:   ['drift', 'spiral', 'cascade', 'shatter', 'bloom', 'unravel', 'flicker', 'surge', 'dissolve', 'wander'],
+};
+const SEED_WORDS = Object.values(WORD_BANK).flat();
+
+const TITLE_ADJECTIVES = ['Quiet', 'Restless', 'Hidden', 'Endless', 'Fractured', 'Luminous', 'Ancient', 'Drifting'];
+
+const THEME_TEMPLATES = [
+  ({ a, b, c }) => `A dreamlike scene of ${a} and ${b}, lit by ${c}`,
+  ({ a, b, c }) => `${cap(a)} meeting ${b} in a haze of ${c}`,
+  ({ a, b, c }) => `An abstract study of ${a}, ${b}, and ${c}`,
+  ({ a, b, c }) => `Where ${a} dissolves into ${b} beneath ${c}`,
+  ({ a, b, c }) => `A surreal portrait built from ${a} and ${b}`,
+];
+const TITLE_TEMPLATES = [
+  ({ a, b }) => `${cap(a)} ${cap(b)}`,
+  ({ a, b }) => `The ${cap(a)} of ${cap(b)}`,
+  ({ a, adj }) => `${adj} ${cap(a)}`,
+  ({ a }) => `Echoes of ${cap(a)}`,
+];
+
+function cap(s) {
+  s = String(s || '');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Normalize a stored comma-joined words string into clean, submittable tokens
+// (lowercased, trimmed, dropping anything over the 30-char session limit).
+function normWords(wordsStr) {
+  return String(wordsStr || '')
+    .split(',')
+    .map(w => w.trim().toLowerCase())
+    .filter(w => w && w.length <= 30);
+}
+
+// Small deterministic PRNG so a given (userId, offset) reproduces the same batch
+// — lets the client cycle "next" predictably without server-side cursor state.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle(arr, rng) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function pickRng(arr, rng) {
+  if (!arr.length) return '';
+  return arr[Math.floor(rng() * arr.length)];
+}
+
+// Aggregate the user's word usage across the four activity sources, weighted by
+// signal strength (a like is stronger taste evidence than a passing bid).
+async function gatherUserActivity(userId) {
+  const freq = new Map();
+  const existingNames = new Set();
+  const bump = (wordsStr, weight) => {
+    for (const w of normWords(wordsStr)) freq.set(w, (freq.get(w) || 0) + weight);
+  };
+
+  const [liked, won, created, bid] = await Promise.all([
+    pool.query(`SELECT s.words FROM artwork_likes l JOIN sessions s ON s.id = l.session_id WHERE l.user_id = $1`, [userId]),
+    pool.query(`SELECT s.words FROM generated_artworks g JOIN sessions s ON s.id = g.session_id WHERE g.owner_user_id = $1`, [userId]),
+    pool.query(`SELECT words, name FROM sessions WHERE creator_user_id = $1`, [userId]),
+    pool.query(`SELECT DISTINCT s.words FROM bids b JOIN sessions s ON s.id = b.session_id WHERE b.user_id = $1`, [userId]),
+  ]);
+
+  liked.rows.forEach(r => bump(r.words, 4));
+  won.rows.forEach(r => bump(r.words, 3));
+  created.rows.forEach(r => {
+    bump(r.words, 2);
+    if (r.name) existingNames.add(r.name.trim().toLowerCase());
+  });
+  bid.rows.forEach(r => bump(r.words, 1));
+
+  return { freq, existingNames, sessionsCreated: created.rows.length };
+}
+
+// Most-used words across all completed (locked) sessions — the popular fallback tier.
+async function gatherPopularWords() {
+  const { rows } = await pool.query(`SELECT words FROM sessions WHERE state = 'locked'`);
+  const freq = new Map();
+  rows.forEach(r => normWords(r.words).forEach(w => freq.set(w, (freq.get(w) || 0) + 1)));
+  return [...freq.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+}
+
+function buildOneSuggestion({ personal, popular, existingNames, rng }) {
+  const picked = [];
+  const seen = new Set();
+  const tryAdd = (w) => {
+    w = String(w || '').trim().toLowerCase();
+    if (!w || w.length > 30 || seen.has(w)) return;
+    seen.add(w); picked.push(w);
+  };
+
+  // 1. Personal words (a shuffled subset of the user's most-used words).
+  const personalTarget = Math.min(personal.length, 6);
+  for (const w of shuffle(personal.slice(0, 20), rng)) {
+    if (picked.length >= personalTarget) break;
+    tryAdd(w);
+  }
+  const personalUsed = picked.length;
+
+  // 2. Blend in 2–4 word-bank words so suggestions feel fresh, not echoed back.
+  const bankCount = 2 + Math.floor(rng() * 3);
+  for (const w of shuffle(SEED_WORDS, rng)) {
+    if (picked.length >= personalUsed + bankCount) break;
+    tryAdd(w);
+  }
+
+  // 3. Fill to 10 from popular words, then the seed bank as a last resort.
+  for (const src of [shuffle(popular, rng), shuffle(SEED_WORDS, rng)]) {
+    for (const w of src) {
+      if (picked.length >= 10) break;
+      tryAdd(w);
+    }
+    if (picked.length >= 10) break;
+  }
+
+  const words = picked.slice(0, 10);
+
+  // Source = whichever tier supplied the majority of the 10 words.
+  let source;
+  if (personalUsed > 5) source = 'personal';
+  else if (popular.length > 0) source = 'popular';
+  else source = 'seed';
+
+  // Theme line + title woven from the chosen words.
+  const themePool = words.length >= 3 ? words : [...words, ...SEED_WORDS];
+  const [a, b, c] = shuffle(themePool, rng).slice(0, 3);
+  const theme = pickRng(THEME_TEMPLATES, rng)({ a, b, c });
+
+  let title = '';
+  for (let attempt = 0; attempt < 6; attempt++) {
+    title = pickRng(TITLE_TEMPLATES, rng)({
+      a: pickRng(words, rng),
+      b: pickRng(words, rng),
+      adj: pickRng(TITLE_ADJECTIVES, rng),
+    });
+    if (!existingNames.has(title.trim().toLowerCase())) break;
+  }
+
+  return { title, words, theme, source, personalUsed };
+}
+
+async function generateSuggestions(userId, count, offset) {
+  const { freq, existingNames, sessionsCreated } = await gatherUserActivity(userId);
+  const personal = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+
+  // Only the popular tier requires an extra query, and only when personal data is thin.
+  const popular = personal.length < 10 ? await gatherPopularWords() : [];
+
+  const suggestions = [];
+  for (let i = 0; i < count; i++) {
+    const rng = mulberry32(((userId * 2654435761) ^ ((offset + i + 1) * 40503)) >>> 0);
+    suggestions.push(buildOneSuggestion({ personal, popular, existingNames, rng }));
+  }
+
+  const basis = {
+    wordsFromHistory: freq.size,
+    sessionsCreated,
+    source: suggestions[0] ? suggestions[0].source : 'seed',
+  };
+
+  return { suggestions, basis };
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -545,6 +733,49 @@ app.post('/api/session/:id/like', async (req, res) => {
   }
 });
 
+// Suggest creative prompts derived from the user's own activity. Always returns
+// `count` suggestions (each with 10 submittable words); `offset` cycles "next".
+app.get('/api/prompts/suggest', async (req, res) => {
+  try {
+    const count  = Math.min(Math.max(parseInt(req.query.count) || 3, 1), 6);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+
+    const { suggestions, basis } = await generateSuggestions(req.user.id, count, offset);
+
+    // Log served prompts so a future "used" mark can reference them. Best-effort:
+    // if the insert fails the feature still works (the table is optional).
+    for (const s of suggestions) {
+      try {
+        const { rows } = await pool.query(
+          `INSERT INTO creative_prompts (user_id, username, title, words, source) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+          [req.user.id, req.user.username, s.title, s.words.join(','), s.source]
+        );
+        s.id = rows[0].id;
+      } catch (_) { /* logging table optional — proceed without an id */ }
+      delete s.personalUsed;
+    }
+
+    res.json({ suggestions, basis });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark a previously-served prompt as used (it populated a created session).
+app.post('/api/prompts/:id/used', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid prompt id' });
+    await pool.query(
+      `UPDATE creative_prompts SET used = true WHERE id = $1 AND user_id = $2`,
+      [id, req.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   socket.on('join-session', (sessionId) => {
@@ -642,6 +873,20 @@ async function start() {
       username VARCHAR(255) NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (session_id, user_id)
+    )
+  `);
+  // Public by default — rows hold only a user's own derived word lists (no auth
+  // material, DMs, or financial data), so the stranger test passes.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS creative_prompts (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      username VARCHAR(255) NOT NULL,
+      title TEXT,
+      words TEXT,
+      source VARCHAR(20),
+      used BOOLEAN DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
