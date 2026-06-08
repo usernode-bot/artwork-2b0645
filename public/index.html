@@ -133,6 +133,7 @@
     #lightbox { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
     #lightbox.lb-open { opacity: 1; pointer-events: auto; }
     #lightbox-img.lb-zoomed { transform: scale(2); cursor: zoom-out !important; }
+    .tag-row::-webkit-scrollbar { display: none; }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
@@ -142,7 +143,10 @@
     <h1 class="text-base font-bold tracking-tight">🎨 Artwork Workspace</h1>
     <div class="flex items-center gap-3">
       <span id="credit-display" class="text-sm font-mono text-violet-300 bg-violet-950/50 px-2.5 py-1 rounded-full">💎 --</span>
-      <span id="username-display" class="text-sm text-zinc-400"></span>
+      <div id="user-identity" class="hidden flex items-center gap-1.5">
+        <div id="avatar-display" class="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold uppercase bg-violet-700 text-white"></div>
+        <span id="username-display" class="text-sm text-zinc-400 truncate max-w-[7rem]"></span>
+      </div>
       <button id="new-session-btn"
         class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors"
         disabled>+ New Session</button>
@@ -197,7 +201,7 @@
         <div class="grid grid-cols-2 gap-4">
           <div>
             <p class="text-xs text-zinc-500 mb-2">10 Words</p>
-            <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
+            <div id="lv-words" class="tag-row flex gap-1.5 overflow-x-auto pb-1" style="scrollbar-width: none; -ms-overflow-style: none;"></div>
           </div>
           <div>
             <p class="text-xs text-zinc-500 mb-2">Generated Artwork</p>
@@ -224,7 +228,7 @@
         <div id="archive-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
       </div>
     </div>
-    <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <div id="archive-list" class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
     </div>
   </div>
@@ -395,7 +399,7 @@ function renderSmallWordChips(container, words) {
   container.innerHTML = '';
   words.forEach(word => {
     const chip = document.createElement('span');
-    chip.className = 'inline-block px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300 mr-1 mb-1';
+    chip.className = 'flex-shrink-0 px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300';
     chip.textContent = word;
     container.appendChild(chip);
   });
@@ -403,8 +407,15 @@ function renderSmallWordChips(container, words) {
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 function renderHeader() {
-  document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
-  document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
+  const identity = document.getElementById('user-identity');
+  if (me) {
+    document.getElementById('avatar-display').textContent   = me.username.charAt(0);
+    document.getElementById('username-display').textContent = `@${me.username}`;
+    identity.classList.remove('hidden');
+  } else {
+    identity.classList.add('hidden');
+  }
+  document.getElementById('credit-display').textContent = me ? `💎 ${me.credits}` : '💎 --';
   document.getElementById('new-session-btn').disabled =
     !!(activeSession && (activeSession.state === 'active' || activeSession.state === 'auction'));
 }
@@ -650,23 +661,23 @@ async function renderArchive() {
     }
     el.innerHTML = sessions.map(s => {
       const words = (s.words || '').split(',').filter(Boolean);
-      const wordChips = words.map(w => `<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300 mr-1 mb-1">${esc(w)}</span>`).join('');
+      const wordChips = words.map(w => `<span class="flex-shrink-0 px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300">${esc(w)}</span>`).join('');
       return `
         <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
           <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
             class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
-          <div class="p-3">
+          <div class="p-4">
             <p class="font-medium text-sm text-white truncate">${esc(s.name)}</p>
-            <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
-            ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
-            <div class="mt-2">${wordChips}</div>
+            <p class="text-xs text-zinc-500 mt-1">by @${esc(s.creator_username)}</p>
+            ${s.winner_username ? `<p class="text-xs text-violet-400 mt-2">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
+            <div class="tag-row mt-3 flex gap-1.5 overflow-x-auto pb-1" style="scrollbar-width: none; -ms-overflow-style: none;">${wordChips}</div>
             <button type="button" data-like-session="${esc(s.id)}"
-              class="like-btn mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${s.liked_by_me ? 'bg-pink-950/50 border-pink-700/50 text-pink-300' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600'}">
+              class="like-btn mt-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${s.liked_by_me ? 'bg-pink-950/50 border-pink-700/50 text-pink-300' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600'}">
               <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
               <span class="like-count tabular-nums">${s.like_count || 0}</span>
             </button>
             ${s.image_url ? `<button data-download="${esc(s.id)}"
-              class="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors">⬇️ Download</button>` : ''}
+              class="mt-4 w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-medium transition-colors">⬇️ Download</button>` : ''}
           </div>
         </div>`;
     }).join('');
@@ -739,7 +750,7 @@ function applyLikeState(btn, liked, count) {
   const countEl = btn.querySelector('.like-count');
   iconEl.textContent  = liked ? '❤️' : '🤍';
   countEl.textContent = count;
-  btn.className = 'like-btn mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ' +
+  btn.className = 'like-btn mt-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ' +
     (liked ? 'bg-pink-950/50 border-pink-700/50 text-pink-300' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600');
 }
 
