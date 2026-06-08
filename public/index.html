@@ -697,33 +697,40 @@ function esc(s) {
 }
 
 // ─── Creative Prompts ───────────────────────────────────────────────────────────
-function promptCardHtml(s, i) {
+function promptCardHtml(s) {
   const chips = (s.words || []).slice(0, 10).map(w =>
     `<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300 mr-1 mb-1">${esc(w)}</span>`
   ).join('');
   return `
-    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-left flex flex-col">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-left flex flex-col w-full max-w-sm">
       <p class="font-semibold text-sm text-white mb-1">${esc(s.title || 'Untitled')}</p>
       <p class="text-xs text-zinc-500 italic mb-3">${esc(s.theme || '')}</p>
       <div class="flex flex-wrap mb-3 flex-1">${chips}</div>
-      <button type="button" data-prompt-start="${i}"
+      <button type="button" data-prompt-start
         class="w-full px-3 py-1.5 bg-violet-600 hover:bg-violet-500 rounded-lg text-xs font-medium transition-colors">Start with this</button>
     </div>`;
+}
+
+// Fetch a single fresh suggestion, advancing the offset so each call re-rolls.
+async function fetchOneSuggestion() {
+  const { suggestions } = await api('GET', `/api/prompts/suggest?count=1&offset=${promptOffset}`);
+  promptOffset += suggestions.length || 1;
+  return suggestions[0] || null;
 }
 
 async function renderPromptCards() {
   const host = document.getElementById('prompt-suggestions');
   if (!host) return;
   try {
-    const { suggestions, basis } = await api('GET', '/api/prompts/suggest?count=3&offset=0');
-    // Seed the modal cycle cache from the same fetch so the first "Inspire me"
-    // reuses these rather than firing a redundant request.
+    const { suggestions, basis } = await api('GET', '/api/prompts/suggest?count=1&offset=0');
+    // Seed the modal cycle cache + offset from the same fetch so neither the
+    // "Inspire me" cycle nor a card re-roll fires a redundant first request.
     promptSuggestions = suggestions;
     promptCycleIdx = 0;
     promptOffset = suggestions.length;
-    host._suggestions = suggestions;
 
-    if (!suggestions.length) { host.innerHTML = ''; return; }
+    const s = suggestions[0];
+    if (!s) { host.innerHTML = ''; return; }
 
     const caption = basis && basis.source === 'personal'
       ? `Based on ${basis.wordsFromHistory} word${basis.wordsFromHistory === 1 ? '' : 's'} from your past sessions`
@@ -733,9 +740,9 @@ async function renderPromptCards() {
 
     host.innerHTML = `
       <p class="text-sm font-medium text-zinc-300 mb-1">✨ Creative prompts for you</p>
-      <p class="text-xs text-zinc-600 mb-4">${esc(caption)}</p>
-      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 w-full max-w-3xl">
-        ${suggestions.map((s, i) => promptCardHtml(s, i)).join('')}
+      <p class="text-xs text-zinc-600 mb-4">${esc(caption)} · "Start with this" rolls a fresh one</p>
+      <div class="w-full flex justify-center">
+        ${promptCardHtml(s)}
       </div>`;
   } catch (err) {
     console.error('prompts error:', err);
@@ -1048,12 +1055,23 @@ async function init() {
     if (btn) handleLike(btn);
   });
 
-  document.getElementById('prompt-suggestions').addEventListener('click', e => {
+  document.getElementById('prompt-suggestions').addEventListener('click', async e => {
     const btn = e.target.closest('button[data-prompt-start]');
     if (!btn) return;
-    const host = document.getElementById('prompt-suggestions');
-    const s = host._suggestions && host._suggestions[parseInt(btn.getAttribute('data-prompt-start'))];
-    if (s) openNewSessionModal(s);
+    if (document.getElementById('new-session-btn').disabled) return; // session active
+    const orig = btn.innerHTML;
+    btn.disabled = true; btn.textContent = 'Generating…';
+    let s;
+    try {
+      // Re-roll a fresh random suggestion rather than reusing the previewed card.
+      s = await fetchOneSuggestion();
+    } catch (err) {
+      alert(err.message);
+      return;
+    } finally {
+      btn.disabled = false; btn.innerHTML = orig;
+    }
+    openNewSessionModal(s || undefined);
   });
 
   loadArchiveCols();
