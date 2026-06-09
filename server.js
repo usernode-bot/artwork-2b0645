@@ -196,7 +196,12 @@ app.get('/api/me', async (req, res) => {
       // On-chain wallet address (ut1…) or null if the user hasn't linked one.
       // Distinct from `credits`, which is the in-app bidding balance.
       usernode_pubkey: req.user.usernode_pubkey ?? null,
-      isStaging: IS_STAGING
+      isStaging: IS_STAGING,
+      // True when no Replicate key is configured, so generation falls back to
+      // the picsum stub (images unrelated to the words). Exposes only the
+      // boolean, never the key value. Lets the UI warn that output is a
+      // placeholder until a key is set.
+      generationStubbed: !REPLICATE_API_KEY
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
