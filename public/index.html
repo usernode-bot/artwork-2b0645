@@ -194,11 +194,10 @@
 
   <!-- Header -->
   <header id="app-header" class="sticky top-0 z-20 bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-4 flex items-center justify-between gap-4" style="height:var(--header-h);flex-shrink:0">
-    <h1 class="text-base font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork Workspace</h1>
+    <h1 class="text-xs font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork Workspace</h1>
     <div class="flex items-center flex-shrink-0 gap-2">
       <span id="credit-display" class="text-xs font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-2.5 py-0.5 rounded-full">💎 --</span>
       <span id="username-display" class="text-xs text-zinc-400"></span>
-      <button id="new-session-btn" class="btn btn-primary" disabled>+ New Session</button>
     </div>
   </header>
 
@@ -492,7 +491,8 @@ function renderSmallWordChips(container, words) {
 function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
-  document.getElementById('new-session-btn').disabled =
+  const _newBtn = document.getElementById('new-session-btn');
+  if (_newBtn) _newBtn.disabled =
     !!(activeSession && (activeSession.state === 'active' || activeSession.state === 'auction'));
 }
 
@@ -1212,8 +1212,9 @@ function initSocket() {
 }
 
 // ─── New Session Modal ────────────────────────────────────────────────────────
+let openNewSessionModal = null;
+
 function initModal() {
-  const btn      = document.getElementById('new-session-btn');
   const modal    = document.getElementById('modal');
   const cancel   = document.getElementById('modal-cancel');
   const create   = document.getElementById('modal-create');
@@ -1234,13 +1235,16 @@ function initModal() {
   wordsInp.addEventListener('input', updateWordCount);
   nameInp.addEventListener('input', updateWordCount);
 
-  btn.addEventListener('click', () => {
+  openNewSessionModal = () => {
     nameInp.value = ''; wordsInp.value = '';
     updateWordCount();
     errEl.classList.add('hidden');
     modal.classList.remove('hidden');
     setTimeout(() => nameInp.focus(), 50);
-  });
+  };
+
+  const btn = document.getElementById('new-session-btn');
+  if (btn) btn.addEventListener('click', openNewSessionModal);
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
@@ -1317,10 +1321,9 @@ async function init() {
 
   initGiftModal();
 
-  // Landing-screen CTA — opens the same New Session flow as the header button.
+  // Landing-screen CTA — opens the New Session modal directly.
   document.getElementById('cta-create-artwork').addEventListener('click', () => {
-    const headerBtn = document.getElementById('new-session-btn');
-    if (!headerBtn.disabled) headerBtn.click();
+    if (openNewSessionModal) openNewSessionModal();
   });
 
   // Share controls live in both the locked view and archive cards — handle
