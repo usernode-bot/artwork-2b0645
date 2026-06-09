@@ -11,6 +11,7 @@ const io = new Server(server);
 const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
+const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 const PUBLIC_API_PATHS = new Set(['/health']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
@@ -113,7 +114,15 @@ app.get('/api/me', async (req, res) => {
   try {
     await ensureUserCredits(req.user.id, req.user.username);
     const { rows } = await pool.query('SELECT balance FROM user_credits WHERE user_id = $1', [req.user.id]);
-    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 1000 });
+    res.json({
+      id: req.user.id,
+      username: req.user.username,
+      credits: rows[0]?.balance ?? 1000,
+      // On-chain wallet address (ut1…) or null if the user hasn't linked one.
+      // Distinct from `credits`, which is the in-app bidding balance.
+      usernode_pubkey: req.user.usernode_pubkey ?? null,
+      isStaging: IS_STAGING
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -139,9 +148,10 @@ app.get('/api/sessions/locked', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
-        g.image_url, g.prompt,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
-        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me
+        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
@@ -533,9 +543,9 @@ app.post('/api/generate', async (req, res) => {
     const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
 
     await pool.query(
-      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, req.user.id, req.user.username, imageUrl, prompt, null]
+      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [sessionId, req.user.id, req.user.username, imageUrl, prompt, null, req.user.usernode_pubkey ?? null]
     );
 
     await pool.query(`UPDATE sessions SET state = 'locked', locked_at = NOW() WHERE id = $1`, [sessionId]);
@@ -545,7 +555,9 @@ app.post('/api/generate', async (req, res) => {
       imageUrl,
       prompt,
       words: wordsStr.split(','),
-      winnerUsername: req.user.username
+      winnerUsername: req.user.username,
+      ownerUserId: req.user.id,
+      ownerPubkey: req.user.usernode_pubkey ?? null
     });
 
     res.json({ ok: true, imageUrl, prompt });
@@ -589,6 +601,83 @@ app.post('/api/session/:id/like', async (req, res) => {
     );
 
     res.json({ liked, likeCount: countRows[0].like_count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send an on-chain gift/tip to the owner of a finished artwork. The actual
+// wallet-to-wallet transfer happens client-side via the Usernode bridge; this
+// endpoint records the gift after the bridge returns a tx hash. Gifts are real
+// on-chain value and are completely separate from the in-app `user_credits`
+// balance used for bidding.
+app.post('/api/session/:id/gift', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+    const { amount: rawAmount, txHash, toPubkey, chainId } = req.body;
+    const amount = Number(rawAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Gift amount must be a positive number' });
+    }
+
+    // The artwork must exist and be locked (giftable).
+    const { rows } = await pool.query(
+      `SELECT g.owner_user_id, g.owner_username, g.owner_pubkey
+       FROM generated_artworks g
+       JOIN sessions s ON s.id = g.session_id
+       WHERE g.session_id = $1 AND s.state = 'locked'`,
+      [sessionId]
+    );
+    const artwork = rows[0];
+    if (!artwork) return res.status(404).json({ error: 'Artwork not found' });
+    if (!artwork.owner_pubkey) {
+      return res.status(409).json({ error: "This creator hasn't linked a wallet yet" });
+    }
+
+    // Trust the server-stored recipient, not the client-supplied one.
+    if (toPubkey && toPubkey !== artwork.owner_pubkey) {
+      return res.status(409).json({ error: 'Recipient wallet mismatch' });
+    }
+    // Server-side self-gift guard.
+    if (req.user.usernode_pubkey && req.user.usernode_pubkey === artwork.owner_pubkey) {
+      return res.status(400).json({ error: "You can't gift your own artwork" });
+    }
+
+    // In staging no real funds move, so the client sends a synthetic tx hash —
+    // accept it and record the gift so totals populate for demos. In prod we
+    // trust the bridge-returned tx hash (see spec: stricter verification is
+    // deferred work).
+    if (!IS_STAGING && !txHash) {
+      return res.status(400).json({ error: 'Missing transaction hash' });
+    }
+    const status = 'confirmed';
+
+    await pool.query(
+      `INSERT INTO gifts (session_id, from_user_id, from_username, from_pubkey, to_user_id, to_username, to_pubkey, amount, tx_hash, chain_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        sessionId,
+        req.user.id,
+        req.user.username,
+        req.user.usernode_pubkey ?? null,
+        artwork.owner_user_id,
+        artwork.owner_username,
+        artwork.owner_pubkey,
+        amount,
+        txHash || null,
+        chainId || null,
+        status
+      ]
+    );
+
+    const { rows: totalRows } = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS gift_total FROM gifts WHERE session_id = $1 AND status <> 'failed'`,
+      [sessionId]
+    );
+
+    res.json({ ok: true, giftTotal: Number(totalRows[0].gift_total) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -834,6 +923,30 @@ async function start() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  // Wallet address (ut1…) of the artwork owner, captured at generation time so
+  // gifts can be routed even after the owner's JWT is gone. Null for artworks
+  // generated before this column existed or by owners with no linked wallet.
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS owner_pubkey TEXT`);
+  // On-chain gifts/tips sent to artwork owners. Financial data (wallet
+  // addresses + amounts) → private: copied schema-only into staging.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gifts (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      from_user_id INTEGER NOT NULL,
+      from_username VARCHAR(255) NOT NULL,
+      from_pubkey TEXT,
+      to_user_id INTEGER NOT NULL,
+      to_username VARCHAR(255),
+      to_pubkey TEXT NOT NULL,
+      amount NUMERIC NOT NULL,
+      tx_hash TEXT,
+      chain_id TEXT,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`COMMENT ON TABLE gifts IS 'staging:private'`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artwork_likes (
       id SERIAL PRIMARY KEY,

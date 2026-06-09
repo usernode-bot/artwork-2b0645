@@ -68,6 +68,10 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
+  <!-- Usernode bridge: centrally hosted, never vendored. Provides the on-chain
+       wallet API (getNodeAddress / sendTransaction) used by the gift feature.
+       Served with no-cache so fixes propagate fleet-wide on the next load. -->
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -256,6 +260,10 @@
             <p class="section-label mb-2.5">Generated Artwork</p>
             <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-xl aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
             <button id="lv-download" class="btn btn-secondary w-full mt-3">⬇️ Download image</button>
+            <button id="lv-gift"
+              class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-none disabled:bg-zinc-800">
+              🎁 <span id="lv-gift-label">Send a gift</span>
+            </button>
             <div id="lv-share" class="flex items-center gap-2 mt-2"></div>
           </div>
         </div>
@@ -336,6 +344,34 @@
     class="fixed top-4 right-4 w-11 h-11 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-600 text-white text-2xl font-normal transition-colors border border-zinc-700">
     &times;
   </button>
+</div>
+
+<!-- Gift modal — sends real on-chain funds via the wallet, NOT in-app credits -->
+<div id="gift-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+  <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+    <h2 class="text-lg font-semibold text-white mb-1">🎁 Send a gift</h2>
+    <p class="text-xs text-zinc-500 mb-4">Tip the artwork owner with on-chain funds from your linked wallet. This is separate from your in-app credits.</p>
+
+    <div id="gift-staging-banner" class="hidden mb-3 text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2">
+      Staging — no real funds sent. This records a demo gift only.
+    </div>
+
+    <div class="mb-3 text-xs text-zinc-400">
+      To <span class="text-violet-300 font-medium">@<span id="gift-owner-name"></span></span>
+      <span class="block mt-1 font-mono text-zinc-500 text-[11px] break-all" id="gift-owner-addr"></span>
+    </div>
+
+    <label class="text-xs text-zinc-500 block mb-1">Amount</label>
+    <input id="gift-amount" type="number" min="0" step="any" placeholder="0.0"
+      class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors mb-1">
+    <p class="text-xs text-zinc-600 mb-4">Sent from your wallet on-chain.</p>
+
+    <div id="gift-error" class="hidden text-red-400 text-xs mb-3"></div>
+    <div class="flex gap-2">
+      <button id="gift-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
+      <button id="gift-submit" class="flex-1 px-4 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors">Send Gift</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -610,8 +646,43 @@ function renderLockedView(data) {
     dlBtn.onclick = hasImage ? () => downloadArtwork(data.id, dlBtn) : null;
   }
 
+  const giftBtn = document.getElementById('lv-gift');
+  if (giftBtn) {
+    const ownerName = data.owner_username || data.winner_username || '';
+    const reason = giftDisabledReason({
+      owner_pubkey: data.owner_pubkey,
+      owner_user_id: data.owner_user_id
+    });
+    giftBtn.disabled = !!reason;
+    giftBtn.title = reason || 'Send an on-chain gift to this artwork';
+    const labelEl = document.getElementById('lv-gift-label');
+    if (labelEl) labelEl.textContent = reason ? (reason.length < 28 ? reason : 'Gift unavailable') : 'Send a gift';
+    giftBtn.onclick = reason ? null : () => openGiftModal({
+      sessionId: data.id,
+      ownerName,
+      ownerPubkey: data.owner_pubkey,
+      onSuccess: total => {
+        if (lockedSessionData) lockedSessionData.gift_total = total;
+        renderArchive();
+      }
+    });
+  }
+
   const shareEl = document.getElementById('lv-share');
   if (shareEl) shareEl.innerHTML = data.id ? shareButtonsHtml(data.id, data.name) : '';
+}
+
+// Why the gift button should be disabled for a given artwork, or null if it's
+// giftable by the current user. Covers: owner has no linked wallet, current
+// user has no linked wallet, and self-gifting.
+function giftDisabledReason(artwork) {
+  if (!artwork || !artwork.owner_pubkey) return "Creator hasn't linked a wallet yet";
+  if (!me || !me.usernode_pubkey) return 'Link a wallet to send gifts';
+  if (artwork.owner_pubkey === me.usernode_pubkey) return "You can't gift your own artwork";
+  if (artwork.owner_user_id != null && me.id != null && artwork.owner_user_id === me.id) {
+    return "You can't gift your own artwork";
+  }
+  return null;
 }
 
 // Download the generated artwork via the auth-gated server proxy, which
@@ -774,15 +845,29 @@ async function renderArchive() {
             <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
             ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
             <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
-            <div class="flex flex-wrap items-center gap-2 mt-3">
+            ${(() => {
+              const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
+              const giftTotal = Number(s.gift_total || 0);
+              const ownerName = s.owner_username || s.winner_username || '';
+              return `<div class="flex flex-wrap items-center gap-2 mt-3">
               <button type="button" data-like-session="${esc(s.id)}"
                 class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
                 <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
                 <span class="like-count tabular-nums">${s.like_count || 0}</span>
               </button>
+              <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
+                data-gift-session="${esc(s.id)}"
+                data-owner-pubkey="${esc(s.owner_pubkey || '')}"
+                data-owner-name="${esc(ownerName)}"
+                ${giftReason ? 'disabled' : ''}
+                title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
+                <span>🎁</span>
+                <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
+              </button>
               ${shareButtonsHtml(s.id, s.name)}
               ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
-            </div>
+            </div>`;
+            })()}
           </div>
         </div>`;
     }).join('');
@@ -797,7 +882,121 @@ function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ─── Sharing ────────────────────────────────────────────────────────────────
+// ─── Gifts (on-chain tips, NOT in-app credits) ─────────────────────────────────
+let giftCtx = null; // { sessionId, ownerName, ownerPubkey, onSuccess }
+
+// Compact display of a per-artwork gift total (e.g. 1.5, or 0 when none yet).
+function formatGiftTotal(n) {
+  const v = Number(n) || 0;
+  if (!v) return '0';
+  return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(4)));
+}
+
+function truncateAddr(addr) {
+  if (!addr) return '';
+  return addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-4)}` : addr;
+}
+
+// The centrally-hosted bridge may expose itself under a few names; resolve
+// whichever object provides the wallet API. Returns null if unavailable
+// (e.g. local dev without SV reachable).
+function getBridge() {
+  const candidates = [window.UsernodeBridge, window.usernodeBridge, window.usernode, window.bridge];
+  for (const c of candidates) {
+    if (c && typeof c.sendTransaction === 'function' && typeof c.getNodeAddress === 'function') return c;
+  }
+  return null;
+}
+
+function openGiftModal(ctx) {
+  giftCtx = ctx;
+  document.getElementById('gift-owner-name').textContent = ctx.ownerName || '';
+  document.getElementById('gift-owner-addr').textContent = truncateAddr(ctx.ownerPubkey);
+  document.getElementById('gift-amount').value = '';
+  const err = document.getElementById('gift-error');
+  err.classList.add('hidden'); err.textContent = '';
+  document.getElementById('gift-staging-banner').classList.toggle('hidden', !(me && me.isStaging));
+  const submit = document.getElementById('gift-submit');
+  submit.disabled = false; submit.textContent = 'Send Gift';
+  document.getElementById('gift-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('gift-amount').focus(), 50);
+}
+
+function closeGiftModal() {
+  document.getElementById('gift-modal').classList.add('hidden');
+  giftCtx = null;
+}
+
+function giftError(msg) {
+  const err = document.getElementById('gift-error');
+  err.textContent = msg;
+  err.classList.remove('hidden');
+}
+
+async function submitGift() {
+  if (!giftCtx) return;
+  const submit = document.getElementById('gift-submit');
+  const err = document.getElementById('gift-error');
+  err.classList.add('hidden');
+
+  const amount = Number(document.getElementById('gift-amount').value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return giftError('Enter a positive amount.');
+  }
+
+  const ownerPubkey = giftCtx.ownerPubkey;
+  if (!ownerPubkey) return giftError("This creator hasn't linked a wallet yet.");
+  if (me && me.usernode_pubkey && me.usernode_pubkey === ownerPubkey) {
+    return giftError("You can't gift your own artwork.");
+  }
+
+  submit.disabled = true; submit.textContent = 'Sending…';
+  try {
+    let txHash, chainId;
+
+    if (me && me.isStaging) {
+      // Staging: no real funds move. Synthesize a tx hash so the gift still
+      // records and totals populate for demos.
+      txHash = 'staging-' + giftCtx.sessionId + '-' + Date.now();
+      chainId = 'staging';
+    } else {
+      const bridge = getBridge();
+      if (!bridge) throw new Error('Wallet features are unavailable right now. Try again shortly.');
+
+      const senderAddr = await bridge.getNodeAddress();
+      if (!senderAddr) throw new Error('No wallet linked. Link a wallet to send gifts.');
+      if (senderAddr === ownerPubkey) throw new Error("You can't gift your own artwork.");
+
+      const result = await bridge.sendTransaction({ to: ownerPubkey, amount });
+      txHash = (result && (result.txHash || result.hash || result.tx_hash)) || result;
+      chainId = bridge.chain_id || (result && result.chainId) || null;
+      if (!txHash) throw new Error('Transaction did not complete.');
+    }
+
+    const data = await api('POST', `/api/session/${giftCtx.sessionId}/gift`, {
+      amount, txHash, toPubkey: ownerPubkey, chainId
+    });
+
+    const newTotal = Number(data.giftTotal || 0);
+    updateGiftBadge(giftCtx.sessionId, newTotal);
+    if (typeof giftCtx.onSuccess === 'function') giftCtx.onSuccess(newTotal);
+    closeGiftModal();
+  } catch (e) {
+    giftError(e.message || 'Gift failed.');
+    submit.disabled = false; submit.textContent = 'Send Gift';
+  }
+}
+
+// Reflect a new gift total on any visible archive card for this session.
+function updateGiftBadge(sessionId, total) {
+  const btn = document.querySelector(`.gift-btn[data-gift-session="${sessionId}"]`);
+  if (btn) {
+    const totalEl = btn.querySelector('.gift-total');
+    if (totalEl) totalEl.textContent = formatGiftTotal(total);
+  }
+}
+
+// ─── Sharing utilities (network share dialogs) ────────────────────────────────
 // Build descriptive share text from an artwork's name + its 10 words.
 // `artwork.words` may be an array (locked view) or a comma string (archive).
 function buildShareText(artwork) {
@@ -995,6 +1194,10 @@ function initSocket() {
         image_url: data.imageUrl,
         prompt: data.prompt,
         winner_username: data.winnerUsername,
+        owner_username: data.winnerUsername,
+        owner_user_id: data.ownerUserId,
+        owner_pubkey: data.ownerPubkey,
+        gift_total: 0,
         words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
       };
       activeSession = null; auctionEnded = false;
@@ -1077,6 +1280,18 @@ function initWordModal() {
   });
 }
 
+// ─── Gift Modal init ──────────────────────────────────────────────────────────
+function initGiftModal() {
+  document.getElementById('gift-cancel').addEventListener('click', closeGiftModal);
+  document.getElementById('gift-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('gift-modal')) closeGiftModal();
+  });
+  document.getElementById('gift-submit').addEventListener('click', submitGift);
+  document.getElementById('gift-amount').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitGift();
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   initModal();
@@ -1088,9 +1303,19 @@ async function init() {
     if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
     const sb = e.target.closest('.share-btn');
     if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
-    const btn = e.target.closest('.like-btn');
-    if (btn) handleLike(btn);
+    const likeBtn = e.target.closest('.like-btn');
+    if (likeBtn) { handleLike(likeBtn); return; }
+    const giftBtn = e.target.closest('.gift-btn');
+    if (giftBtn && !giftBtn.disabled) {
+      openGiftModal({
+        sessionId: parseInt(giftBtn.dataset.giftSession),
+        ownerName: giftBtn.dataset.ownerName || '',
+        ownerPubkey: giftBtn.dataset.ownerPubkey || ''
+      });
+    }
   });
+
+  initGiftModal();
 
   // Landing-screen CTA — opens the same New Session flow as the header button.
   document.getElementById('cta-create-artwork').addEventListener('click', () => {
