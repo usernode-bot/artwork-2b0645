@@ -793,6 +793,39 @@ function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ─── Sharing ────────────────────────────────────────────────────────────────
+// Build descriptive share text from an artwork's name + its 10 words.
+// `artwork.words` may be an array (locked view) or a comma string (archive).
+function buildShareText(artwork) {
+  const name = (artwork.name || 'Untitled').trim();
+  const words = Array.isArray(artwork.words)
+    ? artwork.words
+    : String(artwork.words || '').split(',');
+  const wordList = words.map(w => w.trim()).filter(Boolean).join(', ');
+  let text = `"${name}" — AI artwork from 10 words`;
+  if (wordList) text += `: ${wordList}`;
+  text += ' · Made on Artwork Workspace';
+  return text;
+}
+
+// Build network share-dialog URLs from the artwork's PUBLIC image URL.
+// Never share location.href / the ?token= param — that would leak the JWT.
+function shareUrls(imageUrl, text) {
+  const u = encodeURIComponent(imageUrl);
+  return {
+    // Facebook's sharer.php only honors the `u` (URL) param; text is ignored.
+    twitter: `https://twitter.com/intent/tweet?url=${u}&text=${encodeURIComponent(text)}`,
+    facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
+  };
+}
+
+function openShare(network, imageUrl, text) {
+  if (!imageUrl) return;
+  const urls = shareUrls(imageUrl, text);
+  const url = urls[network];
+  if (url) window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 // ─── Actions ──────────────────────────────────────────────────────────────────
 async function handleBid() {
   const input = document.getElementById('bid-input');
@@ -1049,6 +1082,8 @@ async function init() {
 
   document.getElementById('archive-list').addEventListener('click', e => {
     if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
+    const sb = e.target.closest('.share-btn');
+    if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
     const btn = e.target.closest('.like-btn');
     if (btn) handleLike(btn);
   });
