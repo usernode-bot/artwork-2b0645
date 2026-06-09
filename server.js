@@ -11,6 +11,7 @@ const io = new Server(server);
 const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
+const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 const PUBLIC_API_PATHS = new Set(['/health']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
@@ -113,7 +114,7 @@ app.get('/api/me', async (req, res) => {
   try {
     await ensureUserCredits(req.user.id, req.user.username);
     const { rows } = await pool.query('SELECT balance FROM user_credits WHERE user_id = $1', [req.user.id]);
-    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 1000 });
+    res.json({ id: req.user.id, username: req.user.username, credits: rows[0]?.balance ?? 1000, staging: IS_STAGING });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -140,6 +141,7 @@ app.get('/api/sessions/locked', async (req, res) => {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
         g.image_url, g.prompt,
+        g.owner_user_id, g.burned, g.burn_tx_hash,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me
       FROM sessions s
@@ -219,6 +221,7 @@ async function getLockedArtwork(sessionId) {
     SELECT s.id, s.name, s.creator_username, s.state, s.words,
       a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
       g.image_url, g.prompt,
+      g.owner_user_id, g.burned, g.burn_tx_hash,
       (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count
     FROM sessions s
     LEFT JOIN auctions a ON a.session_id = s.id
@@ -238,7 +241,7 @@ app.get('/api/session/:id/image/download', async (req, res) => {
     if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
 
     const { rows } = await pool.query(
-      `SELECT s.name, g.image_url
+      `SELECT s.name, g.image_url, g.burned
        FROM generated_artworks g
        JOIN sessions s ON s.id = g.session_id
        WHERE g.session_id = $1
@@ -248,6 +251,9 @@ app.get('/api/session/:id/image/download', async (req, res) => {
     );
     const artwork = rows[0];
     if (!artwork?.image_url) return res.status(404).json({ error: 'Artwork not found' });
+    // A burned artwork's token has been destroyed on-chain; the image is no
+    // longer downloadable (the record is retained only as a provenance tombstone).
+    if (artwork.burned) return res.status(410).json({ error: 'This artwork has been burned' });
 
     const upstream = await fetch(toHighResJpegUrl(artwork.image_url));
     if (!upstream.ok) return res.status(502).json({ error: 'Failed to fetch image' });
@@ -594,6 +600,62 @@ app.post('/api/session/:id/like', async (req, res) => {
   }
 });
 
+// Owner-only on-chain burn. The client submits a REAL transaction via the
+// usernode bridge (or, in staging, a synthetic no-op) and posts the confirmed
+// transaction hash here. We record the burned state + tx hash and broadcast it
+// so every connected archive flips to the burned tombstone live.
+app.post('/api/session/:id/burn', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+    const txHash = String(req.body?.txHash || '').trim();
+    const tokenRef = String(req.body?.tokenRef || sessionId);
+
+    // In staging we never touch a real chain, so the client sends a synthetic
+    // hash. Accept it, but require the expected shape so prod paths can't be
+    // faked by a stray empty body.
+    if (IS_STAGING) {
+      if (txHash !== `staging-burn-${sessionId}`) {
+        return res.status(400).json({ error: 'Invalid staging burn token' });
+      }
+    } else if (!txHash) {
+      return res.status(400).json({ error: 'Missing transaction hash' });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT g.owner_user_id, g.burned
+       FROM generated_artworks g
+       JOIN sessions s ON s.id = g.session_id
+       WHERE g.session_id = $1 AND s.state = 'locked'
+       LIMIT 1`,
+      [sessionId]
+    );
+    const artwork = rows[0];
+    if (!artwork) return res.status(404).json({ error: 'Artwork not found' });
+    if (artwork.owner_user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the artwork owner can burn it' });
+    }
+    if (artwork.burned) return res.status(409).json({ error: 'Artwork already burned' });
+
+    const { rows: updated } = await pool.query(
+      `UPDATE generated_artworks
+       SET burned = TRUE, burn_tx_hash = $2, burned_at = NOW(), token_ref = $3
+       WHERE session_id = $1 AND burned = FALSE
+       RETURNING burn_tx_hash`,
+      [sessionId, txHash, tokenRef]
+    );
+    // Lost a race with a concurrent burn — treat as already-burned.
+    if (!updated.length) return res.status(409).json({ error: 'Artwork already burned' });
+
+    io.emit('artwork-burned', { sessionId, burnTxHash: txHash });
+
+    res.json({ ok: true, burned: true, burnTxHash: txHash });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   socket.on('join-session', (sessionId) => {
@@ -621,7 +683,9 @@ app.get('/share-api/:id', async (req, res) => {
       image_url: artwork.image_url,
       prompt: artwork.prompt,
       words: (artwork.words || '').split(',').filter(Boolean),
-      like_count: artwork.like_count || 0
+      like_count: artwork.like_count || 0,
+      burned: !!artwork.burned,
+      burn_tx_hash: artwork.burn_tx_hash || null
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -652,11 +716,15 @@ app.get('/a/:id', async (req, res) => {
     const shareUrl = `${origin}/a/${artwork.id}`;
     const words = (artwork.words || '').split(',').filter(Boolean);
 
+    const burned = !!artwork.burned;
     const title = `${artwork.name} — Artwork`;
-    const description = words.length
-      ? words.join(' · ')
-      : (artwork.prompt || 'A collaborative AI artwork on Usernode.');
-    const ogImage = artwork.image_url ? toHighResJpegUrl(artwork.image_url, OG_IMAGE_SIZE) : '';
+    const description = burned
+      ? '🔥 This artwork has been burned — its token was destroyed on-chain.'
+      : (words.length
+        ? words.join(' · ')
+        : (artwork.prompt || 'A collaborative AI artwork on Usernode.'));
+    // A burned artwork has no live image to advertise in the OG/Twitter card.
+    const ogImage = (!burned && artwork.image_url) ? toHighResJpegUrl(artwork.image_url, OG_IMAGE_SIZE) : '';
 
     // Pre-escape everything user-controlled for HTML/attribute contexts.
     const eTitle = escapeHtml(title);
@@ -683,8 +751,14 @@ app.get('/a/:id', async (req, res) => {
       ? `<p class="meta">🏆 <span class="hl">@${eWinner}</span>${artwork.winning_bid != null ? ` · ${parseInt(artwork.winning_bid)} credits` : ''}</p>`
       : '';
 
-    const imgBlock = artwork.image_url
-      ? `<img class="art" src="${eImg}" alt="${eName}">`
+    const imgBlock = burned
+      ? `<div class="art burned"><div class="burned-mark">🔥</div><div class="burned-label">Burned</div></div>`
+      : (artwork.image_url
+        ? `<img class="art" src="${eImg}" alt="${eName}">`
+        : '');
+
+    const burnedBadge = burned
+      ? `<p class="meta"><span class="burned-badge">🔥 Burned · token destroyed on-chain</span></p>`
       : '';
 
     res.type('html').send(`<!doctype html>
@@ -718,6 +792,12 @@ app.get('/a/:id', async (req, res) => {
     .brand { font-size:.8rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:#a1a1aa; margin:0 0 16px; }
     .card { background:#18181b; border:1px solid #27272a; border-radius:16px; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,.5); }
     .art { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; background:#27272a; }
+    .art.burned { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
+      background:repeating-linear-gradient(45deg,#1c1917,#1c1917 12px,#211a17 12px,#211a17 24px); color:#fca5a5; }
+    .burned-mark { font-size:3rem; line-height:1; filter:grayscale(.1); }
+    .burned-label { font-size:.8rem; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:#f87171; }
+    .burned-badge { display:inline-flex; padding:5px 12px; border-radius:9999px; font-size:.78rem; font-weight:600;
+      background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.4); color:#fca5a5; }
     .body { padding:20px; }
     h1 { font-size:1.35rem; font-weight:700; margin:0 0 4px; letter-spacing:-.01em; }
     .meta { font-size:.85rem; color:#a1a1aa; margin:2px 0; }
@@ -738,6 +818,7 @@ app.get('/a/:id', async (req, res) => {
       <div class="body">
         <h1>${eName}</h1>
         <p class="meta">by <span class="hl">@${eCreator}</span></p>
+        ${burnedBadge}
         ${winnerLine}
         <div class="chips">${wordChips}</div>
         <a class="cta" href="${eUsernodeUrl}">Open in Usernode →</a>
@@ -834,6 +915,12 @@ async function start() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  // Owner-only on-chain burn state. Additive columns — a burned artwork keeps
+  // its row as a provenance tombstone (never hard-deleted).
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS burned BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS burn_tx_hash TEXT`);
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS burned_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS token_ref TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artwork_likes (
       id SERIAL PRIMARY KEY,
