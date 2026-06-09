@@ -68,6 +68,9 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
+  <!-- Canonical usernode bridge (centrally hosted — never vendor). Exposes
+       window.getNodeAddress / window.sendTransaction for on-chain actions. -->
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -252,6 +255,8 @@
             <p class="section-label mb-2.5">Generated Artwork</p>
             <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-xl aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
             <button id="lv-download" class="btn btn-secondary w-full mt-3">⬇️ Download image</button>
+            <button id="lv-burn" class="btn w-full mt-2 hidden !bg-red-600 hover:!bg-red-500 !text-white">🔥 Burn artwork</button>
+            <p id="lv-burned" class="hidden text-sm text-red-400 mt-3 flex items-center gap-2">🔥 <span>This artwork has been burned — its token was destroyed on-chain.</span></p>
             <div id="lv-share" class="flex items-center gap-2 mt-2"></div>
           </div>
         </div>
@@ -319,6 +324,25 @@
     </div>
   </div>
 
+  <!-- Burn Confirmation Modal -->
+  <div id="burn-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-zinc-900 border border-red-900/60 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+      <h2 class="text-lg font-semibold mb-1 flex items-center gap-2">🔥 Burn artwork</h2>
+      <p class="text-sm text-zinc-400 mb-4">This permanently destroys the token on-chain and <span class="text-red-300 font-medium">cannot be undone</span>. The artwork stays visible as a burned tombstone.</p>
+      <p id="bm-name" class="text-sm text-white font-medium mb-3 truncate"></p>
+      <div class="mb-3">
+        <p class="text-xs text-zinc-500 mb-1">Your node address</p>
+        <p id="bm-address" class="text-xs font-mono text-violet-300 break-all bg-zinc-800 rounded-lg px-3 py-2">Loading…</p>
+      </div>
+      <div id="bm-status" class="hidden text-xs text-zinc-400 mb-3 flex items-center gap-2"></div>
+      <div id="bm-error" class="hidden text-red-400 text-xs mb-3"></div>
+      <div class="flex gap-2">
+        <button id="bm-cancel" class="btn btn-secondary flex-1">Cancel</button>
+        <button id="bm-confirm" class="btn btn-primary flex-1 !bg-red-600 hover:!bg-red-500 !border-red-600">Confirm Burn</button>
+      </div>
+    </div>
+  </div>
+
 <!-- Lightbox -->
 <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image lightbox"
   class="fixed inset-0 z-50 overflow-auto"
@@ -343,6 +367,7 @@ const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
 let wordEditIndex = -1;
 let socket;
+let burnTarget = null, burnNodeAddress = null;
 
 // ─── Archive column preference ──────────────────────────────────────────────────
 const ARCHIVE_COLS_KEY = 'archive-columns';
@@ -599,12 +624,34 @@ function renderLockedView(data) {
   const words = getWords(data);
   renderSmallWordChips(document.getElementById('lv-words'), words);
 
+  const burned = !!data.burned;
+  const artEl = document.getElementById('lv-artwork');
+  if (artEl) artEl.classList.toggle('grayscale', burned);
+  if (artEl) artEl.classList.toggle('opacity-40', burned);
+
   const dlBtn = document.getElementById('lv-download');
   if (dlBtn) {
-    const hasImage = !!data.image_url;
+    const hasImage = !!data.image_url && !burned;
     dlBtn.disabled = !hasImage;
+    dlBtn.classList.toggle('hidden', burned);
     dlBtn.onclick = hasImage ? () => downloadArtwork(data.id, dlBtn) : null;
   }
+
+  // Burn is owner-only, only on a not-yet-burned artwork, and only when the
+  // bridge actually loaded. The locked view is shown to the winner who just
+  // generated the piece, so they are the owner.
+  const burnBtn = document.getElementById('lv-burn');
+  if (burnBtn) {
+    const isOwner = data.owner_user_id != null
+      ? (me && me.id === data.owner_user_id)
+      : (me && data.winner_username && me.username === data.winner_username);
+    const canBurn = !burned && isOwner && (isStaging() || bridgeAvailable());
+    burnBtn.classList.toggle('hidden', !canBurn);
+    burnBtn.onclick = canBurn ? () => openBurnModal(data.id, data.name) : null;
+  }
+
+  const burnedMsg = document.getElementById('lv-burned');
+  if (burnedMsg) burnedMsg.classList.toggle('hidden', !burned);
 
   const shareEl = document.getElementById('lv-share');
   if (shareEl) shareEl.innerHTML = data.id ? shareButtonsHtml(data.id, data.name) : '';
@@ -761,13 +808,28 @@ async function renderArchive() {
     el.innerHTML = sessions.map(s => {
       const words = (s.words || '').split(',').filter(Boolean);
       const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
+      const burned = !!s.burned;
+      const isOwner = me && s.owner_user_id != null && me.id === s.owner_user_id;
+      const canBurn = !burned && isOwner && (isStaging() || bridgeAvailable());
+      const imgSrc = esc(s.image_url || 'https://picsum.photos/seed/default/400/300');
+      const imgBlock = burned
+        ? `<div class="relative">
+             <img src="${imgSrc}" alt="Burned artwork"
+               class="w-full aspect-video object-cover bg-zinc-800 grayscale opacity-30" loading="lazy">
+             <div class="absolute inset-0 flex flex-col items-center justify-center gap-1 pointer-events-none">
+               <span class="text-3xl">🔥</span>
+               <span class="text-[0.7rem] font-semibold tracking-widest uppercase text-red-300">Burned</span>
+             </div>
+           </div>`
+        : `<img src="${imgSrc}" alt="Generated artwork"
+             class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">`;
       return `
-        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
+        <div class="bg-zinc-900 border ${burned ? 'border-red-900/50' : 'border-zinc-800'} rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
+          ${imgBlock}
           <div class="p-4">
             <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
             <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
+            ${burned ? `<p class="text-xs text-red-400 mt-1">🔥 Token destroyed on-chain</p>` : ''}
             ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
             <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
             <div class="flex flex-wrap items-center gap-2 mt-3">
@@ -777,7 +839,8 @@ async function renderArchive() {
                 <span class="like-count tabular-nums">${s.like_count || 0}</span>
               </button>
               ${shareButtonsHtml(s.id, s.name)}
-              ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
+              ${(!burned && s.image_url) ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
+              ${canBurn ? `<button type="button" data-burn-session="${esc(s.id)}" data-burn-name="${esc(s.name)}" class="pill !border-red-800/60 !text-red-300 hover:!bg-red-950/40">🔥 Burn</button>` : ''}
             </div>
           </div>
         </div>`;
@@ -938,6 +1001,154 @@ async function submitWordChange() {
   }
 }
 
+// ─── Burn (on-chain) ──────────────────────────────────────────────────────────
+// The usernode bridge is loaded centrally from SV (see <head>). It exposes
+// window.getNodeAddress() and window.sendTransaction(dest, amount, memo, opts).
+function bridgeAvailable() {
+  return typeof window.getNodeAddress === 'function' && typeof window.sendTransaction === 'function';
+}
+function isStaging() { return !!(me && me.staging); }
+
+// Mirror the bridge's own txid extraction across its candidate result fields.
+function extractTxId(result) {
+  if (!result) return null;
+  const fields = ['txid', 'txId', 'hash', 'tx_hash', 'txHash', 'id'];
+  const scan = o => { if (!o) return null; for (const f of fields) if (o[f]) return String(o[f]); return null; };
+  return scan(result) || scan(result.tx) || null;
+}
+
+function setBurnStatus(text, done) {
+  const el = document.getElementById('bm-status');
+  if (!el) return;
+  if (!text) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  const spinner = done
+    ? '<span class="text-base leading-none">🔥</span>'
+    : '<span class="inline-block w-3 h-3 border-2 border-zinc-500 border-t-transparent rounded-full animate-spin"></span>';
+  el.innerHTML = `${spinner}<span>${esc(text)}</span>`;
+}
+function setBurnError(text) {
+  const el = document.getElementById('bm-error');
+  if (!el) return;
+  if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
+  el.textContent = text; el.classList.remove('hidden');
+}
+
+async function openBurnModal(id, name) {
+  if (!id) return;
+  burnTarget = { id: parseInt(id), name: name || `Artwork #${id}`, txHash: null };
+  document.getElementById('bm-name').textContent = burnTarget.name;
+  setBurnError(''); setBurnStatus('');
+  const addrEl = document.getElementById('bm-address');
+  const confirmBtn = document.getElementById('bm-confirm');
+  const cancelBtn = document.getElementById('bm-cancel');
+  confirmBtn.disabled = false; cancelBtn.disabled = false;
+  confirmBtn.textContent = 'Confirm Burn';
+  document.getElementById('burn-modal').classList.remove('hidden');
+
+  if (isStaging()) {
+    addrEl.textContent = '(staging — no on-chain transaction)';
+    burnNodeAddress = null;
+    return;
+  }
+  addrEl.textContent = 'Loading…';
+  try {
+    burnNodeAddress = await window.getNodeAddress();
+    addrEl.textContent = burnNodeAddress || '(unavailable)';
+  } catch (e) {
+    burnNodeAddress = null;
+    addrEl.textContent = '(could not load node address)';
+  }
+}
+
+function closeBurnModal() {
+  document.getElementById('burn-modal').classList.add('hidden');
+  burnTarget = null;
+}
+
+async function confirmBurn() {
+  if (!burnTarget) return;
+  const { id, name } = burnTarget;
+  const confirmBtn = document.getElementById('bm-confirm');
+  const cancelBtn = document.getElementById('bm-cancel');
+  setBurnError('');
+  confirmBtn.disabled = true; cancelBtn.disabled = true;
+  try {
+    // Reuse an already-confirmed on-chain tx on retry so a failed server POST
+    // never triggers a second real burn transaction.
+    let txHash = burnTarget.txHash;
+    if (!txHash) {
+      if (isStaging()) {
+        setBurnStatus('Submitting… (staging — no real transaction)');
+        await new Promise(r => setTimeout(r, 400));
+        txHash = `staging-burn-${id}`;
+      } else {
+        if (!bridgeAvailable()) throw new Error('On-chain bridge unavailable — cannot burn');
+        const dest = burnNodeAddress || await window.getNodeAddress();
+        if (!dest) throw new Error('No node address — is your wallet linked?');
+        const memo = `burn:artwork:${id}`;
+        setBurnStatus('Waiting for signature…');
+        const result = await window.sendTransaction(dest, 0, memo, {
+          waitForInclusion: true,
+          confirmTitle: 'Burn artwork',
+          confirmSubtitle: name,
+          onSubmitted: () => setBurnStatus('Confirming on-chain…')
+        });
+        txHash = extractTxId(result);
+        if (!txHash) throw new Error('No transaction hash returned by the bridge');
+      }
+      burnTarget.txHash = txHash;
+    }
+    setBurnStatus('Recording burn…');
+    await postBurn(id, txHash);
+    setBurnStatus('Burned', true);
+    applyBurned(id, txHash);
+    setTimeout(closeBurnModal, 800);
+  } catch (err) {
+    setBurnStatus('');
+    setBurnError((err && err.message) || 'Burn failed');
+    // If the on-chain tx already went through, let the user retry just the
+    // server record without re-burning.
+    if (burnTarget && burnTarget.txHash) confirmBtn.textContent = 'Retry recording';
+    confirmBtn.disabled = false; cancelBtn.disabled = false;
+  }
+}
+
+// POST the confirmed burn to the server. A 409 means it's already burned, which
+// is a success from the client's point of view (idempotent).
+async function postBurn(id, txHash) {
+  const res = await fetch(`/api/session/${id}/burn`, {
+    method: 'POST', headers: hdrs(), body: JSON.stringify({ txHash, tokenRef: String(id) })
+  });
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (res.ok) return data;
+  if (res.status === 409) return { burned: true };
+  throw new Error(data.error || 'Failed to record burn');
+}
+
+// Reflect the burned state locally; the server also broadcasts artwork-burned
+// to every client (including this one) which re-runs this via the socket.
+function applyBurned(sessionId, txHash) {
+  sessionId = parseInt(sessionId);
+  if (lockedSessionData && lockedSessionData.id === sessionId) {
+    lockedSessionData.burned = true;
+    lockedSessionData.burn_tx_hash = txHash;
+    if (!document.getElementById('locked-view').classList.contains('hidden')) {
+      renderLockedView(lockedSessionData);
+    }
+  }
+  renderArchive();
+}
+
+function initBurnModal() {
+  document.getElementById('bm-cancel').addEventListener('click', closeBurnModal);
+  document.getElementById('burn-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('burn-modal')) closeBurnModal();
+  });
+  document.getElementById('bm-confirm').addEventListener('click', confirmBurn);
+}
+
 // ─── Socket ───────────────────────────────────────────────────────────────────
 function initSocket() {
   socket = io({ auth: { token } });
@@ -1001,6 +1212,10 @@ function initSocket() {
       document.getElementById('locked-view').classList.remove('hidden');
     }
     renderArchive();
+  });
+
+  socket.on('artwork-burned', ({ sessionId, burnTxHash }) => {
+    applyBurned(sessionId, burnTxHash);
   });
 }
 
@@ -1077,10 +1292,13 @@ function initWordModal() {
 async function init() {
   initModal();
   initWordModal();
+  initBurnModal();
   initLightbox();
   initSocket();
 
   document.getElementById('archive-list').addEventListener('click', e => {
+    const burnBtn = e.target.closest('[data-burn-session]');
+    if (burnBtn) { openBurnModal(parseInt(burnBtn.dataset.burnSession), burnBtn.dataset.burnName); return; }
     if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
     const sb = e.target.closest('.share-btn');
     if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
