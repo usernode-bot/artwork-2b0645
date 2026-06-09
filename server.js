@@ -14,7 +14,11 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 const PUBLIC_API_PATHS = new Set(['/health']);
-const PUBLIC_PREFIXES = ['/explorer-api/'];
+// `/share-api/*` is intentionally public: it backs the unauthenticated
+// per-artwork share landing page (`GET /a/:id`), which must be reachable
+// by OG/Twitter crawlers that cannot present a platform token. It only
+// exposes already-public, locked (completed) artwork rows.
+const PUBLIC_PREFIXES = ['/explorer-api/', '/share-api/'];
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -169,7 +173,7 @@ const DOWNLOAD_IMAGE_SIZE = 2048;
 // Rewrite the stored image URL to request the largest available JPEG.
 // picsum.photos takes the size in the path and a `.jpg` suffix forces JPEG
 // output, e.g. https://picsum.photos/seed/<seed>/2048/2048.jpg
-function toHighResJpegUrl(url) {
+function toHighResJpegUrl(url, size = DOWNLOAD_IMAGE_SIZE) {
   try {
     const u = new URL(url);
     if (u.hostname.endsWith('picsum.photos')) {
@@ -183,11 +187,56 @@ function toHighResJpegUrl(url) {
       if (marker !== -1 && parts[marker + 1] !== undefined) {
         base = parts.slice(0, marker + 2); // keep ['seed', '<seed>'] or ['id', '<id>']
       }
-      u.pathname = '/' + base.concat([String(DOWNLOAD_IMAGE_SIZE), `${DOWNLOAD_IMAGE_SIZE}.jpg`]).join('/');
+      u.pathname = '/' + base.concat([String(size), `${size}.jpg`]).join('/');
       return u.toString();
     }
   } catch { /* fall through to original URL */ }
   return url;
+}
+
+// Square edge for the Open Graph / Twitter card image. summary_large_image
+// accepts a square and crops; 1200 is the standard large-card width.
+const OG_IMAGE_SIZE = 1200;
+
+// Escape a value for safe interpolation into server-rendered HTML, including
+// inside double-quoted attributes (e.g. <meta content="…">). This is the
+// server-side counterpart to the client's esc(); it must not be skipped for
+// any user-controlled value (session name, usernames, words, prompt).
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Absolute public origin for this request. Each staging/prod container has
+// its own subdomain, so derive it per request from forwarded headers rather
+// than hardcoding a domain. A PUBLIC_BASE_URL env var overrides when set.
+function publicOrigin(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const host = (req.headers['x-forwarded-host'] || req.get('host') || '').split(',')[0].trim();
+  return `${proto}://${host}`;
+}
+
+// Fetch a single locked (completed) artwork by session id, in the same shape
+// the archive uses. Returns null if the session is missing or not locked.
+async function getLockedArtwork(sessionId) {
+  if (!sessionId) return null;
+  const { rows } = await pool.query(`
+    SELECT s.id, s.name, s.creator_username, s.state, s.words,
+      a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
+      g.image_url, g.prompt,
+      (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count
+    FROM sessions s
+    LEFT JOIN auctions a ON a.session_id = s.id
+    LEFT JOIN generated_artworks g ON g.session_id = s.id
+    WHERE s.id = $1 AND s.state = 'locked'
+    LIMIT 1
+  `, [sessionId]);
+  return rows[0] || null;
 }
 
 // Proxy the generated artwork so the browser can save it as a high-resolution
@@ -639,6 +688,157 @@ io.on('connection', (socket) => {
   socket.on('join-session', (sessionId) => {
     socket.join(`session:${sessionId}`);
   });
+});
+
+// ─── Public share endpoints ─────────────────────────────────────────────────
+// These are reachable WITHOUT a platform token so OG/Twitter crawlers (which
+// can't authenticate) can render rich previews. They expose only locked,
+// already-public artwork rows, and are registered BEFORE the static middleware
+// and the auth-gated `app.get('*')` catch-all so they bypass that gate.
+
+// Public JSON for one locked artwork (prefix is in PUBLIC_PREFIXES).
+app.get('/share-api/:id', async (req, res) => {
+  try {
+    const artwork = await getLockedArtwork(parseInt(req.params.id));
+    if (!artwork) return res.status(404).json({ error: 'Artwork not found' });
+    res.json({
+      id: artwork.id,
+      name: artwork.name,
+      creator_username: artwork.creator_username,
+      winner_username: artwork.winner_username,
+      winning_bid: artwork.winning_bid != null ? parseInt(artwork.winning_bid) : null,
+      image_url: artwork.image_url,
+      prompt: artwork.prompt,
+      words: (artwork.words || '').split(',').filter(Boolean),
+      like_count: artwork.like_count || 0
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Minimal public page used for missing/not-yet-locked artworks. Avoids leaking
+// the auth-gate "Open in Usernode" 401 for a bad share id.
+function renderShareNotFound(res) {
+  res.status(404).type('html').send(`<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artwork not found</title>
+<style>body{font-family:'Inter',system-ui,sans-serif;background:#09090b;color:#e4e4e7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{max-width:24rem;padding:2rem;text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#a1a1aa;font-size:.9rem;margin:0 0 1.25rem}
+a{display:inline-block;padding:.6rem 1.1rem;background:#7c3aed;color:#fff;border-radius:.6rem;text-decoration:none;font-size:.9rem;font-weight:600}</style>
+</head><body><div class="card"><div style="font-size:2.5rem;margin-bottom:.5rem">🖼️</div>
+<h1>Artwork not found</h1><p>This artwork doesn't exist or hasn't been completed yet.</p>
+<a href="https://social-vibecoding.usernodelabs.org">Go to Usernode</a></div></body></html>`);
+}
+
+// Public, server-rendered share landing page for one artwork.
+app.get('/a/:id', async (req, res) => {
+  try {
+    const artwork = await getLockedArtwork(parseInt(req.params.id));
+    if (!artwork) return renderShareNotFound(res);
+
+    const origin = publicOrigin(req);
+    const shareUrl = `${origin}/a/${artwork.id}`;
+    const words = (artwork.words || '').split(',').filter(Boolean);
+
+    const title = `${artwork.name} — Artwork`;
+    const description = words.length
+      ? words.join(' · ')
+      : (artwork.prompt || 'A collaborative AI artwork on Usernode.');
+    const ogImage = artwork.image_url ? toHighResJpegUrl(artwork.image_url, OG_IMAGE_SIZE) : '';
+
+    // Pre-escape everything user-controlled for HTML/attribute contexts.
+    const eTitle = escapeHtml(title);
+    const eDesc = escapeHtml(description);
+    const eName = escapeHtml(artwork.name);
+    const eCreator = escapeHtml(artwork.creator_username);
+    const eWinner = escapeHtml(artwork.winner_username || '');
+    const eShareUrl = escapeHtml(shareUrl);
+    const eOgImage = escapeHtml(ogImage);
+    const eImg = escapeHtml(artwork.image_url || '');
+    const eUsernodeUrl = 'https://social-vibecoding.usernodelabs.org';
+
+    const ogImageTags = ogImage
+      ? `<meta property="og:image" content="${eOgImage}">
+  <meta property="og:image:width" content="${OG_IMAGE_SIZE}">
+  <meta property="og:image:height" content="${OG_IMAGE_SIZE}">
+  <meta name="twitter:image" content="${eOgImage}">`
+      : '';
+
+    const wordChips = words.map(w =>
+      `<span class="chip">${escapeHtml(w)}</span>`).join('');
+
+    const winnerLine = artwork.winner_username
+      ? `<p class="meta">🏆 <span class="hl">@${eWinner}</span>${artwork.winning_bid != null ? ` · ${parseInt(artwork.winning_bid)} credits` : ''}</p>`
+      : '';
+
+    const imgBlock = artwork.image_url
+      ? `<img class="art" src="${eImg}" alt="${eName}">`
+      : '';
+
+    res.type('html').send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${eTitle}</title>
+  <meta name="description" content="${eDesc}">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Artwork">
+  <meta property="og:title" content="${eTitle}">
+  <meta property="og:description" content="${eDesc}">
+  <meta property="og:url" content="${eShareUrl}">
+  ${ogImageTags}
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${eTitle}">
+  <meta name="twitter:description" content="${eDesc}">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --accent:#7c3aed; }
+    * { box-sizing: border-box; }
+    body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:#09090b; color:#fafafa;
+      margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+    .wrap { width:100%; max-width:480px; }
+    .brand { font-size:.8rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:#a1a1aa; margin:0 0 16px; }
+    .card { background:#18181b; border:1px solid #27272a; border-radius:16px; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,.5); }
+    .art { display:block; width:100%; aspect-ratio:1/1; object-fit:cover; background:#27272a; }
+    .body { padding:20px; }
+    h1 { font-size:1.35rem; font-weight:700; margin:0 0 4px; letter-spacing:-.01em; }
+    .meta { font-size:.85rem; color:#a1a1aa; margin:2px 0; }
+    .hl { color:#c4b5fd; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 4px; }
+    .chip { display:inline-flex; padding:5px 12px; border-radius:9999px; font-size:.78rem; font-weight:500;
+      background:rgba(124,58,237,.15); border:1px solid rgba(124,58,237,.35); color:#c4b5fd; }
+    .cta { display:block; text-align:center; margin-top:20px; padding:12px 16px; background:var(--accent);
+      color:#fff; border-radius:10px; text-decoration:none; font-size:.92rem; font-weight:600; transition:background .12s; }
+    .cta:hover { background:#8b5cf6; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <p class="brand">🎨 Artwork Workspace</p>
+    <div class="card">
+      ${imgBlock}
+      <div class="body">
+        <h1>${eName}</h1>
+        <p class="meta">by <span class="hl">@${eCreator}</span></p>
+        ${winnerLine}
+        <div class="chips">${wordChips}</div>
+        <a class="cta" href="${eUsernodeUrl}">Open in Usernode →</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`);
+  } catch (err) {
+    console.error('share page error:', err);
+    renderShareNotFound(res);
+  }
 });
 
 // ─── Static + HTML shell ──────────────────────────────────────────────────────
