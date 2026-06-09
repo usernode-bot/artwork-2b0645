@@ -148,7 +148,7 @@ app.get('/api/sessions/locked', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
-        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username, g.frame_urls,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
         (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
@@ -166,26 +166,17 @@ app.get('/api/sessions/locked', async (req, res) => {
 });
 
 // Highest-resolution square we request from the upstream image source.
-// (picsum.photos serves up to 5000px; 2048 is a high-res JPEG that stays
-// well within that limit and keeps the proxied download reasonably sized.)
 const DOWNLOAD_IMAGE_SIZE = 2048;
 
-// Rewrite the stored image URL to request the largest available JPEG.
-// picsum.photos takes the size in the path and a `.jpg` suffix forces JPEG
-// output, e.g. https://picsum.photos/seed/<seed>/2048/2048.jpg
 function toHighResJpegUrl(url, size = DOWNLOAD_IMAGE_SIZE) {
   try {
     const u = new URL(url);
     if (u.hostname.endsWith('picsum.photos')) {
-      // picsum paths are /seed/<seed>/<w>/<h>, /id/<id>/<w>/<h>, or /<w>/<h>
-      // (optionally with a .jpg/.webp suffix). Keep the image selector
-      // (seed/id) intact and only swap the trailing dimensions, so we fetch
-      // the SAME artwork at a higher resolution rather than a different image.
       const parts = u.pathname.split('/').filter(Boolean);
       let base = [];
       const marker = parts.findIndex(p => p === 'seed' || p === 'id');
       if (marker !== -1 && parts[marker + 1] !== undefined) {
-        base = parts.slice(0, marker + 2); // keep ['seed', '<seed>'] or ['id', '<id>']
+        base = parts.slice(0, marker + 2);
       }
       u.pathname = '/' + base.concat([String(size), `${size}.jpg`]).join('/');
       return u.toString();
@@ -194,14 +185,8 @@ function toHighResJpegUrl(url, size = DOWNLOAD_IMAGE_SIZE) {
   return url;
 }
 
-// Square edge for the Open Graph / Twitter card image. summary_large_image
-// accepts a square and crops; 1200 is the standard large-card width.
 const OG_IMAGE_SIZE = 1200;
 
-// Escape a value for safe interpolation into server-rendered HTML, including
-// inside double-quoted attributes (e.g. <meta content="…">). This is the
-// server-side counterpart to the client's esc(); it must not be skipped for
-// any user-controlled value (session name, usernames, words, prompt).
 function escapeHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;')
@@ -211,9 +196,6 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-// Absolute public origin for this request. Each staging/prod container has
-// its own subdomain, so derive it per request from forwarded headers rather
-// than hardcoding a domain. A PUBLIC_BASE_URL env var overrides when set.
 function publicOrigin(req) {
   if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
   const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
@@ -221,14 +203,14 @@ function publicOrigin(req) {
   return `${proto}://${host}`;
 }
 
-// Fetch a single locked (completed) artwork by session id, in the same shape
-// the archive uses. Returns null if the session is missing or not locked.
+// Fetch a single locked artwork by session id. Returns null if missing/not locked.
 async function getLockedArtwork(sessionId) {
   if (!sessionId) return null;
   const { rows } = await pool.query(`
     SELECT s.id, s.name, s.creator_username, s.state, s.words,
+      s.type, s.frame_count, s.frames,
       a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
-      g.image_url, g.prompt,
+      g.image_url, g.prompt, g.frame_urls,
       (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count
     FROM sessions s
     LEFT JOIN auctions a ON a.session_id = s.id
@@ -239,9 +221,6 @@ async function getLockedArtwork(sessionId) {
   return rows[0] || null;
 }
 
-// Proxy the generated artwork so the browser can save it as a high-resolution
-// JPEG (the image is hosted on a remote origin, so a direct <a download> would
-// be blocked cross-origin).
 app.get('/api/session/:id/image/download', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id);
@@ -277,25 +256,65 @@ app.get('/api/session/:id/image/download', async (req, res) => {
 
 app.post('/api/session', async (req, res) => {
   try {
-    const { name, words: rawWords } = req.body;
+    const { name, words: rawWords, type: rawType, frameCount: rawFrameCount, frames: rawFrames } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
 
-    const words = parseWords(rawWords);
-    if (words.length !== 10) return res.status(400).json({ error: 'Exactly 10 words required' });
-    if (words.some(w => w.length > 30)) return res.status(400).json({ error: 'Each word must be 30 characters or fewer' });
+    const sessionType = rawType === 'video' ? 'video' : 'image';
 
-    const { rows: existing } = await pool.query(
-      `SELECT id FROM sessions WHERE state IN ('active', 'auction') LIMIT 1`
-    );
-    if (existing.length) return res.status(409).json({ error: 'A session is already active' });
+    if (sessionType === 'video') {
+      const frameCount = parseInt(rawFrameCount);
+      if (!frameCount || frameCount < 2 || frameCount > 6) {
+        return res.status(400).json({ error: 'Video sessions require 2–6 frames' });
+      }
+      if (!Array.isArray(rawFrames) || rawFrames.length !== frameCount) {
+        return res.status(400).json({ error: `Expected ${frameCount} frame word arrays` });
+      }
+      for (let fi = 0; fi < rawFrames.length; fi++) {
+        const frame = rawFrames[fi];
+        if (!Array.isArray(frame) || frame.length !== 10) {
+          return res.status(400).json({ error: `Frame ${fi + 1} must have exactly 10 words` });
+        }
+        for (const w of frame) {
+          const t = String(w || '').trim();
+          if (!t) return res.status(400).json({ error: `Frame ${fi + 1}: words cannot be empty` });
+          if (t.length > 30) return res.status(400).json({ error: `Frame ${fi + 1}: words must be 30 characters or fewer` });
+        }
+      }
+      const normalizedFrames = rawFrames.map(f => f.map(w => String(w).trim()));
 
-    const { rows } = await pool.query(
-      `INSERT INTO sessions (name, creator_user_id, creator_username, state, words) VALUES ($1, $2, $3, 'active', $4) RETURNING *`,
-      [name.trim(), req.user.id, req.user.username, words.join(',')]
-    );
+      const { rows: existing } = await pool.query(
+        `SELECT id FROM sessions WHERE state IN ('active', 'auction') LIMIT 1`
+      );
+      if (existing.length) return res.status(409).json({ error: 'A session is already active' });
 
-    io.emit('session-created', { session: rows[0] });
-    res.json({ session: rows[0] });
+      const { rows } = await pool.query(
+        `INSERT INTO sessions (name, creator_user_id, creator_username, state, type, frame_count, frames)
+         VALUES ($1, $2, $3, 'active', 'video', $4, $5) RETURNING *`,
+        [name.trim(), req.user.id, req.user.username, frameCount, JSON.stringify(normalizedFrames)]
+      );
+
+      io.emit('session-created', { session: rows[0] });
+      res.json({ session: rows[0] });
+    } else {
+      // Image session — existing logic unchanged
+      const words = parseWords(rawWords);
+      if (words.length !== 10) return res.status(400).json({ error: 'Exactly 10 words required' });
+      if (words.some(w => w.length > 30)) return res.status(400).json({ error: 'Each word must be 30 characters or fewer' });
+
+      const { rows: existing } = await pool.query(
+        `SELECT id FROM sessions WHERE state IN ('active', 'auction') LIMIT 1`
+      );
+      if (existing.length) return res.status(409).json({ error: 'A session is already active' });
+
+      const { rows } = await pool.query(
+        `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, type, frame_count)
+         VALUES ($1, $2, $3, 'active', $4, 'image', 1) RETURNING *`,
+        [name.trim(), req.user.id, req.user.username, words.join(',')]
+      );
+
+      io.emit('session-created', { session: rows[0] });
+      res.json({ session: rows[0] });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -400,8 +419,9 @@ app.post('/api/session/:id/change-word', async (req, res) => {
   const client = await pool.connect();
   try {
     const sessionId = parseInt(req.params.id);
-    const { wordIndex, newWord, bidAmount: rawBid } = req.body;
+    const { wordIndex, newWord, bidAmount: rawBid, frameIndex: rawFrameIndex } = req.body;
     const bidAmount = parseInt(rawBid);
+    const frameIndex = rawFrameIndex !== undefined ? parseInt(rawFrameIndex) : 0;
 
     if (wordIndex === undefined || wordIndex < 0 || wordIndex > 9) {
       return res.status(400).json({ error: 'wordIndex must be 0–9' });
@@ -422,6 +442,17 @@ app.post('/api/session/:id/change-word', async (req, res) => {
       return res.status(409).json({ error: 'Session not available' });
     }
     const session = sessions[0];
+    const isVideo = session.type === 'video';
+
+    // Validate frameIndex
+    if (!isVideo && frameIndex !== 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'frameIndex must be 0 for image sessions' });
+    }
+    if (isVideo && (frameIndex < 0 || frameIndex >= session.frame_count)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `frameIndex must be 0–${session.frame_count - 1}` });
+    }
 
     const { rows: auctions } = await client.query(
       'SELECT * FROM auctions WHERE session_id = $1',
@@ -456,10 +487,24 @@ app.post('/api/session/:id/change-word', async (req, res) => {
       );
     }
 
-    const wordArr = (session.words || '').split(',');
-    wordArr[wordIndex] = trimmedWord;
-    const newWordsStr = wordArr.join(',');
-    await client.query('UPDATE sessions SET words = $1 WHERE id = $2', [newWordsStr, sessionId]);
+    let newWordsStr;
+    let updatedFrames = null;
+
+    if (isVideo) {
+      const existingFrames = Array.isArray(session.frames) ? session.frames : [];
+      const framesCopy = existingFrames.map(f => Array.isArray(f) ? [...f] : []);
+      while (framesCopy.length <= frameIndex) framesCopy.push([]);
+      if (!Array.isArray(framesCopy[frameIndex])) framesCopy[frameIndex] = [];
+      framesCopy[frameIndex][wordIndex] = trimmedWord;
+      updatedFrames = framesCopy;
+      newWordsStr = framesCopy[frameIndex].join(',');
+      await client.query('UPDATE sessions SET frames = $1 WHERE id = $2', [JSON.stringify(updatedFrames), sessionId]);
+    } else {
+      const wordArr = (session.words || '').split(',');
+      wordArr[wordIndex] = trimmedWord;
+      newWordsStr = wordArr.join(',');
+      await client.query('UPDATE sessions SET words = $1 WHERE id = $2', [newWordsStr, sessionId]);
+    }
 
     await client.query(
       'INSERT INTO bids (session_id, user_id, username, amount) VALUES ($1, $2, $3, $4)',
@@ -490,10 +535,13 @@ app.post('/api/session/:id/change-word', async (req, res) => {
 
     const minNextBid = Math.ceil(bidAmount * 1.01);
 
+    // word-changed payload: keep existing `words` field for backward compat; add frameIndex + frames
     io.to(`session:${sessionId}`).emit('word-changed', {
       sessionId,
       words: newWordsStr.split(','),
-      changedBy: req.user.username
+      changedBy: req.user.username,
+      frameIndex,
+      frames: updatedFrames
     });
 
     io.to(`session:${sessionId}`).emit('bid-placed', {
@@ -526,6 +574,7 @@ app.post('/api/generate', async (req, res) => {
     if (!sessions.length) return res.status(409).json({ error: 'Session not in auction state' });
 
     const session = sessions[0];
+    const isVideo = session.type === 'video';
 
     const { rows: auctions } = await pool.query('SELECT * FROM auctions WHERE session_id = $1', [sessionId]);
     if (!auctions.length) return res.status(404).json({ error: 'Auction not found' });
@@ -538,29 +587,56 @@ app.post('/api/generate', async (req, res) => {
       return res.status(409).json({ error: 'Auction has not ended yet' });
     }
 
-    const wordsStr = session.words || '';
-    const prompt = `A beautiful artwork inspired by: ${wordsStr}`;
-    const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
+    let imageUrl, prompt, frameUrls = null;
 
-    await pool.query(
-      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [sessionId, req.user.id, req.user.username, imageUrl, prompt, null, req.user.usernode_pubkey ?? null]
-    );
+    if (isVideo) {
+      const frames = Array.isArray(session.frames) ? session.frames : [];
+      frameUrls = [];
+      for (let fi = 0; fi < session.frame_count; fi++) {
+        frameUrls.push(`https://picsum.photos/seed/${sessionId}-${fi}/512/512`);
+      }
+      imageUrl = frameUrls[0];
+      const frame0Words = Array.isArray(frames[0]) ? frames[0].join(',') : '';
+      prompt = `A beautiful video artwork inspired by: ${frame0Words}`;
+
+      await pool.query(
+        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey, frame_urls)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [sessionId, req.user.id, req.user.username, imageUrl, prompt, null, req.user.usernode_pubkey ?? null, JSON.stringify(frameUrls)]
+      );
+    } else {
+      const wordsStr = session.words || '';
+      prompt = `A beautiful artwork inspired by: ${wordsStr}`;
+      imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
+
+      await pool.query(
+        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [sessionId, req.user.id, req.user.username, imageUrl, prompt, null, req.user.usernode_pubkey ?? null]
+      );
+    }
 
     await pool.query(`UPDATE sessions SET state = 'locked', locked_at = NOW() WHERE id = $1`, [sessionId]);
+
+    const broadcastWords = isVideo
+      ? (Array.isArray(session.frames?.[0]) ? session.frames[0] : [])
+      : (session.words || '').split(',');
 
     io.emit('session-locked', {
       sessionId,
       imageUrl,
       prompt,
-      words: wordsStr.split(','),
+      words: broadcastWords,
+      type: session.type || 'image',
+      frameCount: session.frame_count || 1,
+      frames: session.frames || null,
+      frameUrls,
       winnerUsername: req.user.username,
       ownerUserId: req.user.id,
       ownerPubkey: req.user.usernode_pubkey ?? null
     });
 
-    res.json({ ok: true, imageUrl, prompt });
+    res.json({ ok: true, imageUrl, prompt, frameUrls });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -606,11 +682,7 @@ app.post('/api/session/:id/like', async (req, res) => {
   }
 });
 
-// Send an on-chain gift/tip to the owner of a finished artwork. The actual
-// wallet-to-wallet transfer happens client-side via the Usernode bridge; this
-// endpoint records the gift after the bridge returns a tx hash. Gifts are real
-// on-chain value and are completely separate from the in-app `user_credits`
-// balance used for bidding.
+// Send an on-chain gift/tip to the owner of a finished artwork.
 app.post('/api/session/:id/gift', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id);
@@ -622,7 +694,6 @@ app.post('/api/session/:id/gift', async (req, res) => {
       return res.status(400).json({ error: 'Gift amount must be a positive number' });
     }
 
-    // The artwork must exist and be locked (giftable).
     const { rows } = await pool.query(
       `SELECT g.owner_user_id, g.owner_username, g.owner_pubkey
        FROM generated_artworks g
@@ -636,19 +707,13 @@ app.post('/api/session/:id/gift', async (req, res) => {
       return res.status(409).json({ error: "This creator hasn't linked a wallet yet" });
     }
 
-    // Trust the server-stored recipient, not the client-supplied one.
     if (toPubkey && toPubkey !== artwork.owner_pubkey) {
       return res.status(409).json({ error: 'Recipient wallet mismatch' });
     }
-    // Server-side self-gift guard.
     if (req.user.usernode_pubkey && req.user.usernode_pubkey === artwork.owner_pubkey) {
       return res.status(400).json({ error: "You can't gift your own artwork" });
     }
 
-    // In staging no real funds move, so the client sends a synthetic tx hash —
-    // accept it and record the gift so totals populate for demos. In prod we
-    // trust the bridge-returned tx hash (see spec: stricter verification is
-    // deferred work).
     if (!IS_STAGING && !txHash) {
       return res.status(400).json({ error: 'Missing transaction hash' });
     }
@@ -690,17 +755,20 @@ io.on('connection', (socket) => {
   });
 });
 
-// ─── Public share endpoints ─────────────────────────────────────────────────
-// These are reachable WITHOUT a platform token so OG/Twitter crawlers (which
-// can't authenticate) can render rich previews. They expose only locked,
-// already-public artwork rows, and are registered BEFORE the static middleware
-// and the auth-gated `app.get('*')` catch-all so they bypass that gate.
+// ─── Public share endpoints ──────────────────────────────────────────────────
 
 // Public JSON for one locked artwork (prefix is in PUBLIC_PREFIXES).
 app.get('/share-api/:id', async (req, res) => {
   try {
     const artwork = await getLockedArtwork(parseInt(req.params.id));
     if (!artwork) return res.status(404).json({ error: 'Artwork not found' });
+
+    const isVideo = artwork.type === 'video' && artwork.frame_count > 1;
+    // For video sessions use frame-0 words; for image sessions use the words string.
+    const words = isVideo && Array.isArray(artwork.frames?.[0])
+      ? artwork.frames[0]
+      : (artwork.words || '').split(',').filter(Boolean);
+
     res.json({
       id: artwork.id,
       name: artwork.name,
@@ -709,16 +777,17 @@ app.get('/share-api/:id', async (req, res) => {
       winning_bid: artwork.winning_bid != null ? parseInt(artwork.winning_bid) : null,
       image_url: artwork.image_url,
       prompt: artwork.prompt,
-      words: (artwork.words || '').split(',').filter(Boolean),
-      like_count: artwork.like_count || 0
+      words,
+      like_count: artwork.like_count || 0,
+      type: artwork.type || 'image',
+      frameCount: artwork.frame_count || 1,
+      frameUrls: artwork.frame_urls || null
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Minimal public page used for missing/not-yet-locked artworks. Avoids leaking
-// the auth-gate "Open in Usernode" 401 for a bad share id.
 function renderShareNotFound(res) {
   res.status(404).type('html').send(`<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -739,15 +808,20 @@ app.get('/a/:id', async (req, res) => {
 
     const origin = publicOrigin(req);
     const shareUrl = `${origin}/a/${artwork.id}`;
-    const words = (artwork.words || '').split(',').filter(Boolean);
+    const isVideo = artwork.type === 'video' && (artwork.frame_count || 1) > 1;
 
-    const title = `${artwork.name} — Artwork`;
+    // Words for description: use frame-0 words for video, regular words for image
+    const words = isVideo && Array.isArray(artwork.frames?.[0])
+      ? artwork.frames[0]
+      : (artwork.words || '').split(',').filter(Boolean);
+
+    const titleSuffix = isVideo ? `${artwork.frame_count}-Frame Video` : 'Artwork';
+    const title = `${artwork.name} — ${titleSuffix}`;
     const description = words.length
       ? words.join(' · ')
       : (artwork.prompt || 'A collaborative AI artwork on Usernode.');
     const ogImage = artwork.image_url ? toHighResJpegUrl(artwork.image_url, OG_IMAGE_SIZE) : '';
 
-    // Pre-escape everything user-controlled for HTML/attribute contexts.
     const eTitle = escapeHtml(title);
     const eDesc = escapeHtml(description);
     const eName = escapeHtml(artwork.name);
@@ -772,9 +846,35 @@ app.get('/a/:id', async (req, res) => {
       ? `<p class="meta">🏆 <span class="hl">@${eWinner}</span>${artwork.winning_bid != null ? ` · ${parseInt(artwork.winning_bid)} credits` : ''}</p>`
       : '';
 
-    const imgBlock = artwork.image_url
-      ? `<img class="art" src="${eImg}" alt="${eName}">`
-      : '';
+    // Build the image/video block
+    let mediaBlock = '';
+    const frameUrls = artwork.frame_urls;
+    if (isVideo && Array.isArray(frameUrls) && frameUrls.length > 1) {
+      // Safely serialize frameUrls for inline JS: escape < > & to prevent XSS
+      const safeFrameJson = JSON.stringify(frameUrls)
+        .replace(/&/g, '\\u0026')
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e');
+      mediaBlock = `
+        <div style="position:relative">
+          <img class="art" id="share-art" src="${eImg}" alt="${eName}">
+          <span style="position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.7);color:#fff;font-size:0.7rem;padding:3px 8px;border-radius:9999px;pointer-events:none">▶ ${artwork.frame_count} frames</span>
+        </div>
+        <script>
+        (function(){
+          var frames=${safeFrameJson};
+          if(frames.length<2)return;
+          var i=0;
+          setInterval(function(){
+            i=(i+1)%frames.length;
+            var el=document.getElementById('share-art');
+            if(el)el.src=frames[i];
+          },2000);
+        })();
+        <\/script>`;
+    } else if (artwork.image_url) {
+      mediaBlock = `<img class="art" src="${eImg}" alt="${eName}">`;
+    }
 
     res.type('html').send(`<!doctype html>
 <html lang="en">
@@ -821,9 +921,9 @@ app.get('/a/:id', async (req, res) => {
 </head>
 <body>
   <div class="wrap">
-    <p class="brand">🎨 Artwork Workspace</p>
+    <p class="brand">${isVideo ? '🎬' : '🎨'} Artwork Workspace</p>
     <div class="card">
-      ${imgBlock}
+      ${mediaBlock}
       <div class="body">
         <h1>${eName}</h1>
         <p class="meta">by <span class="hl">@${eCreator}</span></p>
@@ -872,6 +972,9 @@ async function start() {
     )
   `);
   await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS words TEXT`);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'image'`);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS frame_count INTEGER NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS frames JSONB`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_credits (
       id SERIAL PRIMARY KEY,
@@ -923,12 +1026,8 @@ async function start() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  // Wallet address (ut1…) of the artwork owner, captured at generation time so
-  // gifts can be routed even after the owner's JWT is gone. Null for artworks
-  // generated before this column existed or by owners with no linked wallet.
   await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS owner_pubkey TEXT`);
-  // On-chain gifts/tips sent to artwork owners. Financial data (wallet
-  // addresses + amounts) → private: copied schema-only into staging.
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS frame_urls JSONB`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gifts (
       id SERIAL PRIMARY KEY,

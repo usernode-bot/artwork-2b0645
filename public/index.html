@@ -188,6 +188,51 @@
     #lightbox { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
     #lightbox.lb-open { opacity: 1; pointer-events: auto; }
     #lightbox-img.lb-zoomed { transform: scale(2); cursor: zoom-out !important; }
+
+    /* ── Frame tab button ─────────────────────────────────────────────── */
+    .frame-tab {
+      padding: 4px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;
+      border: 1px solid #3f3f46; background: #27272a; color: #a1a1aa;
+      cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .frame-tab.active {
+      background: rgba(124,58,237,0.25);
+      border-color: rgba(124,58,237,0.6);
+      color: #c4b5fd;
+    }
+
+    /* ── Modal frame inputs (video) ───────────────────────────────────── */
+    .frame-block { border: 1px solid #3f3f46; border-radius: 12px; padding: 12px; background: #09090b; }
+    .frame-block-header { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #71717a; margin-bottom: 8px; }
+
+    /* ── Type toggle ─────────────────────────────────────────────────── */
+    .type-toggle-btn {
+      flex: 1; padding: 7px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: 600;
+      border: 1px solid transparent; cursor: pointer; transition: all 0.12s;
+      background: transparent; color: #71717a;
+    }
+    .type-toggle-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .type-toggle-btn:not(.active):hover { color: #e4e4e7; background: #27272a; }
+
+    /* ── Lightbox nav arrows ─────────────────────────────────────────── */
+    .lb-nav {
+      position: fixed; top: 50%; transform: translateY(-50%);
+      width: 44px; height: 44px; border-radius: 50%;
+      background: rgba(30,30,35,0.85); border: 1px solid #3f3f46;
+      color: #e4e4e7; font-size: 1.2rem; display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: background 0.12s; z-index: 10;
+    }
+    .lb-nav:hover { background: rgba(60,60,70,0.95); }
+    #lb-prev { left: 12px; }
+    #lb-next { right: 60px; }
+
+    /* ── Archive video badge ─────────────────────────────────────────── */
+    .video-badge {
+      position: absolute; top: 6px; left: 6px;
+      background: rgba(0,0,0,0.72); color: #fff;
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.04em;
+      padding: 2px 8px; border-radius: 9999px; pointer-events: none;
+    }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
@@ -229,7 +274,9 @@
       <div id="words-stage">
         <!-- Words panel (centered) -->
         <div id="words-panel">
-          <p class="section-label mb-4">10 Words</p>
+          <!-- Frame tabs: only visible for video sessions -->
+          <div id="frame-tabs" class="hidden flex-wrap gap-1.5 mb-3"></div>
+          <p id="words-section-label" class="section-label mb-4">10 Words</p>
           <div id="word-chips" class="flex flex-wrap gap-2"></div>
           <p id="words-hint" class="text-xs text-zinc-500 mt-4">Click a word to change it (costs 1 credit + bid)</p>
         </div>
@@ -253,12 +300,22 @@
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
           <div>
-            <p class="section-label mb-2.5">10 Words</p>
+            <p id="lv-words-label" class="section-label mb-2.5">10 Words</p>
             <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
           </div>
           <div>
             <p class="section-label mb-2.5">Generated Artwork</p>
-            <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-xl aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
+            <div style="position:relative">
+              <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-xl aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
+              <span id="lv-video-badge" class="video-badge hidden">▶ Video</span>
+            </div>
+            <!-- Video playback controls for locked view -->
+            <div id="lv-video-controls" class="hidden mt-2 flex items-center gap-2">
+              <button id="lv-prev-frame" class="btn btn-secondary" style="padding:4px 10px;font-size:0.8rem">‹</button>
+              <button id="lv-play-pause" class="btn btn-secondary flex-1" style="padding:4px 10px;font-size:0.8rem">⏸ Pause</button>
+              <button id="lv-next-frame" class="btn btn-secondary" style="padding:4px 10px;font-size:0.8rem">›</button>
+              <span id="lv-frame-indicator" class="text-xs text-zinc-500 tabular-nums min-w-[32px] text-right">1/1</span>
+            </div>
             <button id="lv-download" class="btn btn-secondary w-full mt-3">⬇️ Download image</button>
             <button id="lv-gift"
               class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-none disabled:bg-zinc-800">
@@ -290,19 +347,46 @@
 
   <!-- New Session Modal -->
   <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-lg shadow-2xl" style="max-height:90vh;overflow-y:auto">
       <h2 class="text-lg font-semibold mb-1">New Session</h2>
-      <p class="text-sm text-zinc-500 mb-4">Give your session a name, then enter 10 words that will inspire the artwork.</p>
+      <p class="text-sm text-zinc-500 mb-4">Give your session a name and choose its type.</p>
+
+      <!-- Session name -->
       <input id="modal-name" type="text" placeholder="Session name (e.g. Cosmic Dream)" maxlength="80"
-        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
-      <div class="relative mb-1">
-        <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass shadow red silk dream echo"
-          class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
-        <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 10</span>
+        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-4 outline-none transition-colors">
+
+      <!-- Type toggle -->
+      <div class="flex gap-1 bg-zinc-800 border border-zinc-700 rounded-xl p-1 mb-4">
+        <button type="button" id="modal-type-image" class="type-toggle-btn active">🖼️ Image</button>
+        <button type="button" id="modal-type-video" class="type-toggle-btn">🎬 Video</button>
       </div>
-      <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
-      <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
-      <div class="flex gap-2">
+
+      <!-- Image mode -->
+      <div id="modal-image-section">
+        <div class="relative mb-1">
+          <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass shadow red silk dream echo"
+            class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
+          <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 10</span>
+        </div>
+        <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
+      </div>
+
+      <!-- Video mode -->
+      <div id="modal-video-section" class="hidden">
+        <div class="flex items-center gap-3 mb-4">
+          <label class="text-sm text-zinc-400">Frames:</label>
+          <div id="modal-frame-count-group" class="inline-flex items-center gap-0.5 bg-zinc-800 border border-zinc-700 rounded-lg p-0.5">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+        <div id="modal-frames-container" class="flex flex-col gap-3">
+          <!-- Frame blocks populated by JS -->
+        </div>
+        <p class="text-xs text-zinc-600 mt-3 mb-1">Each frame needs exactly 10 words, max 30 chars each.</p>
+      </div>
+
+      <div id="modal-error" class="hidden text-red-400 text-xs mb-3 mt-1"></div>
+      <div class="flex gap-2 mt-4">
         <button id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
         <button id="modal-create" class="btn btn-primary flex-1" disabled>Create</button>
       </div>
@@ -339,6 +423,14 @@
     <img id="lightbox-img" src="" alt="Full-size artwork"
       class="max-w-full object-contain rounded-lg shadow-2xl transition-transform duration-200"
       style="transform-origin: center; cursor: zoom-in; max-height: calc(100vh - 2rem)">
+  </div>
+  <!-- Frame nav arrows (hidden for image sessions) -->
+  <button id="lb-prev" class="lb-nav hidden" aria-label="Previous frame">&#8249;</button>
+  <button id="lb-next" class="lb-nav hidden" aria-label="Next frame">&#8250;</button>
+  <!-- Frame indicator + play/pause for video lightbox -->
+  <div id="lb-indicator" class="hidden fixed bottom-16 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-zinc-900/90 border border-zinc-700 rounded-full px-4 py-2">
+    <button id="lb-play-pause" class="text-xs text-zinc-200 font-medium">⏸ Pause</button>
+    <span id="lb-frame-text" class="text-xs text-zinc-400 tabular-nums">Frame 1 / 1</span>
   </div>
   <button id="lightbox-close" aria-label="Close"
     class="fixed top-4 right-4 w-11 h-11 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-600 text-white text-2xl font-normal transition-colors border border-zinc-700">
@@ -383,6 +475,22 @@ const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
 let wordEditIndex = -1;
 let socket;
+
+// Video-specific state
+let activeVideoFrame = 0;
+
+// Locked-view video player state
+let _lvVideoInterval = null;
+let _lvCurrentFrame = 0;
+let _lvFrameUrls = null;
+let _lvFramesData = null;
+let _lvPlaying = false;
+
+// Lightbox video state
+let _lbFrameUrls = null;
+let _lbCurrentFrame = 0;
+let _lbPlaying = false;
+let _lbInterval = null;
 
 // ─── Archive column preference ──────────────────────────────────────────────────
 const ARCHIVE_COLS_KEY = 'archive-columns';
@@ -456,7 +564,24 @@ async function api(method, path, body) {
 
 // ─── Word helpers ─────────────────────────────────────────────────────────────
 function getWords(session) {
-  if (!session?.words) return [];
+  if (!session) return [];
+  // Video: return frame-0 words from the frames array
+  if (session.type === 'video' && Array.isArray(session.frames) && session.frames.length > 0) {
+    const f = session.frames[0];
+    return Array.isArray(f) ? f : [];
+  }
+  if (!session.words) return [];
+  if (Array.isArray(session.words)) return session.words;
+  return session.words.split(',').filter(Boolean);
+}
+
+function getFrameWords(session, frameIndex) {
+  if (!session) return [];
+  if (session.type === 'video' && Array.isArray(session.frames)) {
+    const f = session.frames[frameIndex];
+    return Array.isArray(f) ? f : [];
+  }
+  if (!session.words) return [];
   if (Array.isArray(session.words)) return session.words;
   return session.words.split(',').filter(Boolean);
 }
@@ -519,14 +644,42 @@ function renderMain() {
 
     const badge = document.getElementById('sv-badge');
     if (activeSession.state === 'active') {
-      badge.textContent = 'Active';
+      badge.textContent = activeSession.type === 'video' ? '🎬 Active' : 'Active';
       badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-900/50 text-emerald-400 flex-shrink-0';
     } else {
       badge.textContent = 'Auction';
       badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-amber-900/50 text-amber-400 flex-shrink-0';
     }
 
-    const words = getWords(activeSession);
+    const isVideo = activeSession.type === 'video' && (activeSession.frame_count || 1) > 1;
+    const frameTabsEl = document.getElementById('frame-tabs');
+    const wordsLabel  = document.getElementById('words-section-label');
+
+    if (isVideo) {
+      // Show frame tabs
+      frameTabsEl.classList.remove('hidden');
+      frameTabsEl.style.display = 'flex';
+      frameTabsEl.innerHTML = '';
+      const count = activeSession.frame_count || 1;
+      for (let fi = 0; fi < count; fi++) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'frame-tab' + (fi === activeVideoFrame ? ' active' : '');
+        btn.textContent = `Frame ${fi + 1}`;
+        btn.addEventListener('click', () => {
+          activeVideoFrame = fi;
+          renderMain();
+        });
+        frameTabsEl.appendChild(btn);
+      }
+      if (wordsLabel) wordsLabel.textContent = `Frame ${activeVideoFrame + 1} — 10 Words`;
+    } else {
+      frameTabsEl.classList.add('hidden');
+      frameTabsEl.style.display = '';
+      if (wordsLabel) wordsLabel.textContent = '10 Words';
+    }
+
+    const words = isVideo ? getFrameWords(activeSession, activeVideoFrame) : getWords(activeSession);
     const editable = activeSession.state === 'active' || activeSession.state === 'auction';
     renderWordChips(document.getElementById('word-chips'), words, editable);
 
@@ -631,13 +784,77 @@ function updateCountdown(remaining) {
   textEl.textContent = remaining;
 }
 
+// ─── Locked-view video player ─────────────────────────────────────────────────
+function startLvVideoPlayer(frameUrls, framesData) {
+  stopLvVideoPlayer();
+  _lvFrameUrls = frameUrls;
+  _lvFramesData = framesData;
+  _lvCurrentFrame = 0;
+  _lvPlaying = true;
+  _updateLvFrame(0);
+  _lvVideoInterval = setInterval(() => {
+    if (!_lvPlaying) return;
+    _lvCurrentFrame = (_lvCurrentFrame + 1) % (_lvFrameUrls ? _lvFrameUrls.length : 1);
+    _updateLvFrame(_lvCurrentFrame);
+  }, 2000);
+}
+
+function stopLvVideoPlayer() {
+  if (_lvVideoInterval) { clearInterval(_lvVideoInterval); _lvVideoInterval = null; }
+  _lvFrameUrls = null;
+  _lvFramesData = null;
+  _lvPlaying = false;
+}
+
+function _updateLvFrame(fi) {
+  const img = document.getElementById('lv-artwork');
+  if (img && _lvFrameUrls && _lvFrameUrls[fi]) img.src = _lvFrameUrls[fi];
+  const ind = document.getElementById('lv-frame-indicator');
+  if (ind && _lvFrameUrls) ind.textContent = `${fi + 1}/${_lvFrameUrls.length}`;
+  // Update words label for current frame
+  const wordsLabel = document.getElementById('lv-words-label');
+  if (wordsLabel && _lvFrameUrls && _lvFrameUrls.length > 1) {
+    wordsLabel.textContent = `Frame ${fi + 1} Words`;
+  }
+  // Update word chips for current frame
+  const lwords = (_lvFramesData && Array.isArray(_lvFramesData[fi])) ? _lvFramesData[fi] : [];
+  renderSmallWordChips(document.getElementById('lv-words'), lwords);
+}
+
+function stepLvFrame(dir) {
+  if (!_lvFrameUrls) return;
+  _lvCurrentFrame = (_lvCurrentFrame + dir + _lvFrameUrls.length) % _lvFrameUrls.length;
+  _updateLvFrame(_lvCurrentFrame);
+}
+
 function renderLockedView(data) {
   document.getElementById('lv-name').textContent   = data.name;
-  document.getElementById('lv-artwork').src        = data.image_url || '';
   document.getElementById('lv-prompt').textContent = data.prompt || '';
   document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username || '?'} · ${data.winning_bid || data.current_bid || '?'} credits`;
-  const words = getWords(data);
-  renderSmallWordChips(document.getElementById('lv-words'), words);
+
+  const isVideo = data.type === 'video' && (data.frame_count || 1) > 1;
+  const frameUrls = data.frame_urls || (data.frameUrls ? data.frameUrls : null);
+  const framesData = data.frames || null;
+
+  document.getElementById('lv-artwork').src = data.image_url || '';
+  document.getElementById('lv-video-badge').classList.toggle('hidden', !isVideo);
+
+  const videoControls = document.getElementById('lv-video-controls');
+  const wordsLabel    = document.getElementById('lv-words-label');
+
+  if (isVideo && Array.isArray(frameUrls) && frameUrls.length > 1) {
+    videoControls.style.display = 'flex';
+    videoControls.classList.remove('hidden');
+    startLvVideoPlayer(frameUrls, framesData);
+    if (wordsLabel) wordsLabel.textContent = 'Frame 1 Words';
+  } else {
+    videoControls.style.display = '';
+    videoControls.classList.add('hidden');
+    stopLvVideoPlayer();
+    if (wordsLabel) wordsLabel.textContent = '10 Words';
+    const words = isVideo && Array.isArray(framesData?.[0]) ? framesData[0] : getWords(data);
+    renderSmallWordChips(document.getElementById('lv-words'), words);
+  }
 
   const dlBtn = document.getElementById('lv-download');
   if (dlBtn) {
@@ -700,7 +917,6 @@ async function downloadArtwork(sessionId, btn) {
     }
     const blob = await res.blob();
     const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `artwork-${sessionId}.jpg`;
-    // Server proxies the artwork as a high-resolution JPEG.
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -717,13 +933,8 @@ async function downloadArtwork(sessionId, btn) {
 }
 
 // ─── Sharing ──────────────────────────────────────────────────────────────────
-// Public share URL for an artwork. The app runs on its own subdomain inside
-// the iframe, so location.origin already equals the public origin that serves
-// the /a/:id landing page.
 function shareUrlFor(id) { return `${location.origin}/a/${id}`; }
 
-// Markup for the per-artwork share controls (copy link / X / Facebook). Title
-// is HTML-escaped for the attribute; dataset reads it back as the raw string.
 function shareButtonsHtml(id, title) {
   const t = esc(title || '');
   return `
@@ -779,9 +990,53 @@ function shareToFacebook(id) {
 // ─── Lightbox ─────────────────────────────────────────────────────────────────
 let _lbEscHandler = null;
 
-function openLightbox(src) {
+function _stopLbInterval() {
+  if (_lbInterval) { clearInterval(_lbInterval); _lbInterval = null; }
+}
+
+function _lbStepFrame(dir) {
+  if (!_lbFrameUrls || _lbFrameUrls.length < 2) return;
+  _lbCurrentFrame = (_lbCurrentFrame + dir + _lbFrameUrls.length) % _lbFrameUrls.length;
+  _lbShowFrame(_lbCurrentFrame);
+}
+
+function _lbShowFrame(fi) {
+  const img = document.getElementById('lightbox-img');
+  if (img && _lbFrameUrls && _lbFrameUrls[fi]) {
+    img.src = _lbFrameUrls[fi];
+    img.classList.remove('lb-zoomed');
+    img.style.cursor = 'zoom-in';
+  }
+  const frameText = document.getElementById('lb-frame-text');
+  if (frameText && _lbFrameUrls) frameText.textContent = `Frame ${fi + 1} / ${_lbFrameUrls.length}`;
+}
+
+function _lbStartAutoplay() {
+  _stopLbInterval();
+  _lbPlaying = true;
+  const ppBtn = document.getElementById('lb-play-pause');
+  if (ppBtn) ppBtn.textContent = '⏸ Pause';
+  _lbInterval = setInterval(() => {
+    _lbCurrentFrame = (_lbCurrentFrame + 1) % (_lbFrameUrls ? _lbFrameUrls.length : 1);
+    _lbShowFrame(_lbCurrentFrame);
+  }, 2000);
+}
+
+function _lbPauseAutoplay() {
+  _stopLbInterval();
+  _lbPlaying = false;
+  const ppBtn = document.getElementById('lb-play-pause');
+  if (ppBtn) ppBtn.textContent = '▶ Play';
+}
+
+function openLightbox(src, frameUrls, startFrame) {
   const lb  = document.getElementById('lightbox');
   const img = document.getElementById('lightbox-img');
+
+  _stopLbInterval();
+  _lbFrameUrls = (Array.isArray(frameUrls) && frameUrls.length > 1) ? frameUrls : null;
+  _lbCurrentFrame = startFrame || 0;
+
   img.src = src;
   img.classList.remove('lb-zoomed');
   img.style.cursor = 'zoom-in';
@@ -789,11 +1044,36 @@ function openLightbox(src) {
   lb.classList.add('lb-open');
   document.body.style.overflow = 'hidden';
   document.getElementById('lightbox-close').focus();
-  _lbEscHandler = e => { if (e.key === 'Escape') closeLightbox(); };
+
+  const prevBtn = document.getElementById('lb-prev');
+  const nextBtn = document.getElementById('lb-next');
+  const indicator = document.getElementById('lb-indicator');
+
+  if (_lbFrameUrls) {
+    prevBtn.classList.remove('hidden');
+    nextBtn.classList.remove('hidden');
+    indicator.classList.remove('hidden');
+    _lbShowFrame(_lbCurrentFrame);
+    _lbStartAutoplay();
+  } else {
+    prevBtn.classList.add('hidden');
+    nextBtn.classList.add('hidden');
+    indicator.classList.add('hidden');
+  }
+
+  _lbEscHandler = e => {
+    if (e.key === 'Escape') { closeLightbox(); return; }
+    if (_lbFrameUrls) {
+      if (e.key === 'ArrowLeft') _lbStepFrame(-1);
+      else if (e.key === 'ArrowRight') _lbStepFrame(1);
+    }
+  };
   document.addEventListener('keydown', _lbEscHandler);
 }
 
 function closeLightbox() {
+  _stopLbInterval();
+  _lbFrameUrls = null;
   document.getElementById('lightbox').classList.remove('lb-open');
   document.body.style.overflow = '';
   if (_lbEscHandler) {
@@ -804,11 +1084,16 @@ function closeLightbox() {
 
 function initLightbox() {
   document.getElementById('lv-artwork').addEventListener('click', () => {
-    const src = document.getElementById('lv-artwork').src;
-    if (src) openLightbox(src);
+    const artEl = document.getElementById('lv-artwork');
+    if (!artEl.src) return;
+    openLightbox(artEl.src, _lvFrameUrls, _lvCurrentFrame);
   });
   document.getElementById('lightbox').addEventListener('click', e => {
-    if (!e.target.closest('#lightbox-img') && !e.target.closest('#lightbox-close')) closeLightbox();
+    if (!e.target.closest('#lightbox-img') && !e.target.closest('#lightbox-close')
+      && !e.target.closest('#lb-prev') && !e.target.closest('#lb-next')
+      && !e.target.closest('#lb-indicator')) {
+      closeLightbox();
+    }
   });
   document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
   document.getElementById('lightbox-img').addEventListener('click', e => {
@@ -817,12 +1102,83 @@ function initLightbox() {
     const zoomed = img.classList.toggle('lb-zoomed');
     img.style.cursor = zoomed ? 'zoom-out' : 'zoom-in';
   });
+  document.getElementById('lb-prev').addEventListener('click', e => { e.stopPropagation(); _lbStepFrame(-1); });
+  document.getElementById('lb-next').addEventListener('click', e => { e.stopPropagation(); _lbStepFrame(1); });
+  document.getElementById('lb-play-pause').addEventListener('click', e => {
+    e.stopPropagation();
+    if (_lbPlaying) _lbPauseAutoplay(); else _lbStartAutoplay();
+  });
+
+  // Touch swipe on lightbox
+  let _lbTouchX = null;
+  const lbEl = document.getElementById('lightbox');
+  lbEl.addEventListener('touchstart', e => { _lbTouchX = e.touches[0].clientX; }, { passive: true });
+  lbEl.addEventListener('touchend', e => {
+    if (_lbTouchX === null || !_lbFrameUrls) { _lbTouchX = null; return; }
+    const dx = e.changedTouches[0].clientX - _lbTouchX;
+    if (Math.abs(dx) > 40) _lbStepFrame(dx < 0 ? 1 : -1);
+    _lbTouchX = null;
+  }, { passive: true });
 }
 
 function filenameFromDisposition(header) {
   if (!header) return null;
   const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
   return m ? decodeURIComponent(m[1]) : null;
+}
+
+// ─── Archive video card hover animation ─────────────────────────────────────
+let _archiveObserver = null;
+const _archiveCardIntervals = new Map();
+
+function setupArchiveVideoCards() {
+  // Clean up any existing intervals
+  _archiveCardIntervals.forEach((id, el) => { clearInterval(id); });
+  _archiveCardIntervals.clear();
+
+  const cards = document.querySelectorAll('#archive-list [data-frame-urls]');
+  if (!cards.length) return;
+
+  if (_archiveObserver) _archiveObserver.disconnect();
+
+  _archiveObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting && _archiveCardIntervals.has(entry.target)) {
+        clearInterval(_archiveCardIntervals.get(entry.target));
+        _archiveCardIntervals.delete(entry.target);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  cards.forEach(card => {
+    _archiveObserver.observe(card);
+    const img = card.querySelector('img[data-frame-urls]') || card;
+    let rawUrls;
+    try { rawUrls = JSON.parse(img.dataset.frameUrls || card.dataset.frameUrls || '[]'); } catch { rawUrls = []; }
+    if (!Array.isArray(rawUrls) || rawUrls.length < 2) return;
+
+    const imgEl = card.querySelector('img');
+    if (!imgEl) return;
+    const originalSrc = imgEl.src;
+
+    card.addEventListener('mouseenter', () => {
+      if (_archiveCardIntervals.has(card)) return;
+      let fi = 0;
+      const iv = setInterval(() => {
+        fi = (fi + 1) % rawUrls.length;
+        imgEl.src = rawUrls[fi];
+      }, 600);
+      _archiveCardIntervals.set(card, iv);
+    });
+
+    card.addEventListener('mouseleave', () => {
+      if (_archiveCardIntervals.has(card)) {
+        clearInterval(_archiveCardIntervals.get(card));
+        _archiveCardIntervals.delete(card);
+      }
+      imgEl.src = originalSrc;
+    });
+  });
 }
 
 async function renderArchive() {
@@ -834,12 +1190,27 @@ async function renderArchive() {
       applyArchiveCols(); return;
     }
     el.innerHTML = sessions.map(s => {
-      const words = (s.words || '').split(',').filter(Boolean);
-      const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
+      const isVideo = s.type === 'video' && (s.frame_count || 1) > 1;
+      const frameUrls = s.frame_urls;
+      const hasFrameUrls = isVideo && Array.isArray(frameUrls) && frameUrls.length > 1;
+      // For archive chip display: use frame-0 words for video, regular words for image
+      let displayWords;
+      if (isVideo && Array.isArray(s.frames) && Array.isArray(s.frames[0])) {
+        displayWords = s.frames[0];
+      } else {
+        displayWords = (s.words || '').split(',').filter(Boolean);
+      }
+      const wordChips = displayWords.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
+      const frameUrlsAttr = hasFrameUrls ? esc(JSON.stringify(frameUrls)) : '';
       return `
-        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700"
+          ${hasFrameUrls ? `data-frame-urls="${frameUrlsAttr}"` : ''}>
+          <div style="position:relative">
+            <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
+              class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy"
+              ${hasFrameUrls ? `data-frame-urls="${frameUrlsAttr}"` : ''}>
+            ${isVideo ? `<span class="video-badge">▶ ${s.frame_count || 2} frames</span>` : ''}
+          </div>
           <div class="p-4">
             <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
             <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
@@ -875,6 +1246,7 @@ async function renderArchive() {
       btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
     });
     applyArchiveCols();
+    setupArchiveVideoCards();
   } catch (err) { console.error('archive error:', err); }
 }
 
@@ -885,7 +1257,6 @@ function esc(s) {
 // ─── Gifts (on-chain tips, NOT in-app credits) ─────────────────────────────────
 let giftCtx = null; // { sessionId, ownerName, ownerPubkey, onSuccess }
 
-// Compact display of a per-artwork gift total (e.g. 1.5, or 0 when none yet).
 function formatGiftTotal(n) {
   const v = Number(n) || 0;
   if (!v) return '0';
@@ -897,9 +1268,6 @@ function truncateAddr(addr) {
   return addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-4)}` : addr;
 }
 
-// The centrally-hosted bridge may expose itself under a few names; resolve
-// whichever object provides the wallet API. Returns null if unavailable
-// (e.g. local dev without SV reachable).
 function getBridge() {
   const candidates = [window.UsernodeBridge, window.usernodeBridge, window.usernode, window.bridge];
   for (const c of candidates) {
@@ -955,8 +1323,6 @@ async function submitGift() {
     let txHash, chainId;
 
     if (me && me.isStaging) {
-      // Staging: no real funds move. Synthesize a tx hash so the gift still
-      // records and totals populate for demos.
       txHash = 'staging-' + giftCtx.sessionId + '-' + Date.now();
       chainId = 'staging';
     } else {
@@ -987,7 +1353,6 @@ async function submitGift() {
   }
 }
 
-// Reflect a new gift total on any visible archive card for this session.
 function updateGiftBadge(sessionId, total) {
   const btn = document.querySelector(`.gift-btn[data-gift-session="${sessionId}"]`);
   if (btn) {
@@ -996,9 +1361,7 @@ function updateGiftBadge(sessionId, total) {
   }
 }
 
-// ─── Sharing utilities (network share dialogs) ────────────────────────────────
-// Build descriptive share text from an artwork's name + its 10 words.
-// `artwork.words` may be an array (locked view) or a comma string (archive).
+// ─── Sharing utilities ────────────────────────────────────────────────────────
 function buildShareText(artwork) {
   const name = (artwork.name || 'Untitled').trim();
   const words = Array.isArray(artwork.words)
@@ -1011,12 +1374,9 @@ function buildShareText(artwork) {
   return text;
 }
 
-// Build network share-dialog URLs from the artwork's PUBLIC image URL.
-// Never share location.href / the ?token= param — that would leak the JWT.
 function shareUrls(imageUrl, text) {
   const u = encodeURIComponent(imageUrl);
   return {
-    // Facebook's sharer.php only honors the `u` (URL) param; text is ignored.
     twitter: `https://twitter.com/intent/tweet?url=${u}&text=${encodeURIComponent(text)}`,
     facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
   };
@@ -1065,7 +1425,6 @@ async function handleLike(btn) {
   const iconEl  = btn.querySelector('.like-icon');
   const countEl = btn.querySelector('.like-count');
 
-  // Optimistic toggle
   const wasLiked = iconEl.textContent === '❤️';
   const prevCount = parseInt(countEl.textContent) || 0;
   applyLikeState(btn, !wasLiked, prevCount + (wasLiked ? -1 : 1));
@@ -1125,12 +1484,15 @@ async function submitWordChange() {
   if (newWord.length > 30) { errEl.textContent = 'Word must be 30 characters or fewer.'; errEl.classList.remove('hidden'); return; }
   if (!bidAmount || bidAmount < 1) { errEl.textContent = 'Enter a valid bid amount.'; errEl.classList.remove('hidden'); return; }
 
+  const frameIndex = (activeSession && activeSession.type === 'video') ? activeVideoFrame : 0;
+
   submitBtn.disabled = true; submitBtn.textContent = 'Submitting…';
   try {
     const data = await api('POST', `/api/session/${activeSession.id}/change-word`, {
       wordIndex: wordEditIndex,
       newWord,
-      bidAmount
+      bidAmount,
+      frameIndex
     });
     if (me) { me.credits = data.newBalance; renderHeader(); }
     closeWordModal();
@@ -1150,7 +1512,9 @@ function initSocket() {
   });
 
   socket.on('session-created', ({ session }) => {
-    activeSession = session; auctionEnded = false;
+    activeSession = session;
+    auctionEnded = false;
+    activeVideoFrame = 0;
     socket.emit('join-session', session.id);
     renderHeader(); renderMain();
   });
@@ -1171,9 +1535,21 @@ function initSocket() {
 
   socket.on('word-changed', data => {
     if (!activeSession || activeSession.id !== data.sessionId) return;
-    activeSession.words = data.words.join(',');
-    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
-    renderWordChips(document.getElementById('word-chips'), data.words, editable);
+    const isVideo = activeSession.type === 'video';
+    if (isVideo && data.frames !== undefined) {
+      // Update the full frames array
+      activeSession.frames = data.frames;
+      // Only re-render chips if the changed frame is the one currently on screen
+      if (data.frameIndex === activeVideoFrame) {
+        const editable = activeSession.state === 'active' || activeSession.state === 'auction';
+        renderWordChips(document.getElementById('word-chips'), data.words, editable);
+      }
+    } else {
+      // Image session: update words string
+      activeSession.words = data.words.join(',');
+      const editable = activeSession.state === 'active' || activeSession.state === 'auction';
+      renderWordChips(document.getElementById('word-chips'), data.words, editable);
+    }
   });
 
   socket.on('auction-tick', ({ remaining }) => {
@@ -1189,6 +1565,7 @@ function initSocket() {
 
   socket.on('session-locked', async data => {
     if (activeSession && activeSession.id === data.sessionId) {
+      const words = Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '');
       lockedSessionData = {
         ...activeSession,
         image_url: data.imageUrl,
@@ -1198,9 +1575,15 @@ function initSocket() {
         owner_user_id: data.ownerUserId,
         owner_pubkey: data.ownerPubkey,
         gift_total: 0,
-        words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
+        words,
+        type: data.type || activeSession.type || 'image',
+        frame_count: data.frameCount || activeSession.frame_count || 1,
+        frames: data.frames || activeSession.frames || null,
+        frame_urls: data.frameUrls || null
       };
-      activeSession = null; auctionEnded = false;
+      activeSession = null;
+      auctionEnded = false;
+      activeVideoFrame = 0;
     }
     renderHeader(); renderMain();
     if (lockedSessionData) {
@@ -1213,30 +1596,125 @@ function initSocket() {
 
 // ─── New Session Modal ────────────────────────────────────────────────────────
 function initModal() {
-  const btn      = document.getElementById('new-session-btn');
-  const modal    = document.getElementById('modal');
-  const cancel   = document.getElementById('modal-cancel');
-  const create   = document.getElementById('modal-create');
-  const nameInp  = document.getElementById('modal-name');
-  const wordsInp = document.getElementById('modal-words');
-  const countEl  = document.getElementById('modal-word-count');
-  const errEl    = document.getElementById('modal-error');
+  const btn        = document.getElementById('new-session-btn');
+  const modal      = document.getElementById('modal');
+  const cancel     = document.getElementById('modal-cancel');
+  const create     = document.getElementById('modal-create');
+  const nameInp    = document.getElementById('modal-name');
+  const wordsInp   = document.getElementById('modal-words');
+  const countEl    = document.getElementById('modal-word-count');
+  const errEl      = document.getElementById('modal-error');
+  const imageBtn   = document.getElementById('modal-type-image');
+  const videoBtn   = document.getElementById('modal-type-video');
+  const imageSection = document.getElementById('modal-image-section');
+  const videoSection = document.getElementById('modal-video-section');
+  const frameCountGroup = document.getElementById('modal-frame-count-group');
+  const framesContainer = document.getElementById('modal-frames-container');
 
-  function updateWordCount() {
-    const words = parseInputWords(wordsInp.value);
-    const count = words.length;
-    countEl.textContent = `${count} / 10`;
-    countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
-      (count === 10 ? 'text-emerald-400' : 'text-zinc-500');
-    create.disabled = !(nameInp.value.trim() && count === 10);
+  let sessionType = 'image';
+  let videoFrameCount = 3;
+
+  // Render frame-count selector buttons
+  function renderFrameCountButtons() {
+    frameCountGroup.innerHTML = '';
+    for (let n = 2; n <= 6; n++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = String(n);
+      b.className = 'px-2 py-1 rounded-md text-xs font-medium transition-colors ' +
+        (n === videoFrameCount ? 'bg-violet-600 text-white' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+      b.addEventListener('click', () => {
+        videoFrameCount = n;
+        renderFrameCountButtons();
+        renderFrameInputs();
+        validateModal();
+      });
+      frameCountGroup.appendChild(b);
+    }
   }
 
-  wordsInp.addEventListener('input', updateWordCount);
-  nameInp.addEventListener('input', updateWordCount);
+  // Build frame word inputs
+  function renderFrameInputs() {
+    framesContainer.innerHTML = '';
+    for (let fi = 0; fi < videoFrameCount; fi++) {
+      const block = document.createElement('div');
+      block.className = 'frame-block';
+      block.innerHTML = `
+        <div class="frame-block-header">Frame ${fi + 1}</div>
+        <div class="relative">
+          <input type="text" id="modal-frame-${fi}" placeholder="10 words for frame ${fi + 1}"
+            class="w-full bg-zinc-900 border border-zinc-700 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none transition-colors pr-14">
+          <span id="modal-frame-count-${fi}" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0/10</span>
+        </div>`;
+      framesContainer.appendChild(block);
+      const inp = document.getElementById(`modal-frame-${fi}`);
+      inp.addEventListener('input', () => {
+        const words = parseInputWords(inp.value);
+        const countSpan = document.getElementById(`modal-frame-count-${fi}`);
+        if (countSpan) {
+          countSpan.textContent = `${words.length}/10`;
+          countSpan.className = 'absolute right-2 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
+            (words.length === 10 ? 'text-emerald-400' : 'text-zinc-500');
+        }
+        validateModal();
+      });
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          const nextInp = document.getElementById(`modal-frame-${fi + 1}`);
+          if (nextInp) nextInp.focus(); else create.click();
+        }
+      });
+    }
+    validateModal();
+  }
+
+  function validateModal() {
+    const hasName = !!nameInp.value.trim();
+    if (sessionType === 'image') {
+      const words = parseInputWords(wordsInp.value);
+      countEl.textContent = `${words.length} / 10`;
+      countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
+        (words.length === 10 ? 'text-emerald-400' : 'text-zinc-500');
+      create.disabled = !(hasName && words.length === 10);
+    } else {
+      let allFilled = hasName;
+      for (let fi = 0; fi < videoFrameCount; fi++) {
+        const inp = document.getElementById(`modal-frame-${fi}`);
+        if (!inp || parseInputWords(inp.value).length !== 10) { allFilled = false; break; }
+      }
+      create.disabled = !allFilled;
+    }
+  }
+
+  function setType(t) {
+    sessionType = t;
+    if (t === 'image') {
+      imageBtn.classList.add('active');
+      videoBtn.classList.remove('active');
+      imageSection.classList.remove('hidden');
+      videoSection.classList.add('hidden');
+    } else {
+      videoBtn.classList.add('active');
+      imageBtn.classList.remove('active');
+      imageSection.classList.add('hidden');
+      videoSection.classList.remove('hidden');
+      renderFrameCountButtons();
+      renderFrameInputs();
+    }
+    validateModal();
+  }
+
+  imageBtn.addEventListener('click', () => setType('image'));
+  videoBtn.addEventListener('click', () => setType('video'));
+
+  wordsInp.addEventListener('input', validateModal);
+  nameInp.addEventListener('input', validateModal);
 
   btn.addEventListener('click', () => {
     nameInp.value = ''; wordsInp.value = '';
-    updateWordCount();
+    sessionType = 'image';
+    setType('image');
+    validateModal();
     errEl.classList.add('hidden');
     modal.classList.remove('hidden');
     setTimeout(() => nameInp.focus(), 50);
@@ -1245,23 +1723,54 @@ function initModal() {
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
   async function doCreate() {
-    const name  = nameInp.value.trim();
-    const words = parseInputWords(wordsInp.value);
+    const name = nameInp.value.trim();
+    errEl.classList.add('hidden');
+
     if (!name) { errEl.textContent = 'Please enter a session name.'; errEl.classList.remove('hidden'); return; }
-    if (words.length !== 10) { errEl.textContent = 'Please enter exactly 10 words.'; errEl.classList.remove('hidden'); return; }
-    create.disabled = true; create.textContent = 'Creating…'; errEl.classList.add('hidden');
+
+    create.disabled = true; create.textContent = 'Creating…';
     try {
-      const { session } = await api('POST', '/api/session', { name, words });
-      activeSession = session; auctionEnded = false;
+      let body;
+      if (sessionType === 'video') {
+        const frames = [];
+        for (let fi = 0; fi < videoFrameCount; fi++) {
+          const inp = document.getElementById(`modal-frame-${fi}`);
+          const words = parseInputWords(inp ? inp.value : '');
+          if (words.length !== 10) {
+            errEl.textContent = `Frame ${fi + 1} needs exactly 10 words (got ${words.length}).`;
+            errEl.classList.remove('hidden');
+            return;
+          }
+          frames.push(words);
+        }
+        body = { name, type: 'video', frameCount: videoFrameCount, frames };
+      } else {
+        const words = parseInputWords(wordsInp.value);
+        if (words.length !== 10) {
+          errEl.textContent = 'Please enter exactly 10 words.';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        body = { name, words };
+      }
+
+      const { session } = await api('POST', '/api/session', body);
+      activeSession = session;
+      auctionEnded = false;
+      activeVideoFrame = 0;
       modal.classList.add('hidden');
       renderHeader(); renderMain();
       socket.emit('join-session', session.id);
     } catch (err) {
       errEl.textContent = err.message; errEl.classList.remove('hidden');
-    } finally { create.disabled = false; create.textContent = 'Create'; updateWordCount(); }
+    } finally {
+      create.disabled = false; create.textContent = 'Create';
+      validateModal();
+    }
   }
+
   create.addEventListener('click', doCreate);
-  nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') wordsInp.focus(); });
+  nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') { if (sessionType === 'image') wordsInp.focus(); else document.getElementById('modal-frame-0')?.focus(); } });
   wordsInp.addEventListener('keydown', e => { if (e.key === 'Enter') doCreate(); });
 }
 
@@ -1277,6 +1786,41 @@ function initWordModal() {
   });
   document.getElementById('wm-bid').addEventListener('keydown', e => {
     if (e.key === 'Enter') submitWordChange();
+  });
+}
+
+// ─── Locked view video controls init ─────────────────────────────────────────
+function initLockedVideoControls() {
+  document.getElementById('lv-prev-frame').addEventListener('click', () => {
+    _lvPlaying = false;
+    const ppBtn = document.getElementById('lv-play-pause');
+    if (ppBtn) ppBtn.textContent = '▶ Play';
+    if (_lvVideoInterval) { clearInterval(_lvVideoInterval); _lvVideoInterval = null; }
+    stepLvFrame(-1);
+  });
+  document.getElementById('lv-next-frame').addEventListener('click', () => {
+    _lvPlaying = false;
+    const ppBtn = document.getElementById('lv-play-pause');
+    if (ppBtn) ppBtn.textContent = '▶ Play';
+    if (_lvVideoInterval) { clearInterval(_lvVideoInterval); _lvVideoInterval = null; }
+    stepLvFrame(1);
+  });
+  document.getElementById('lv-play-pause').addEventListener('click', () => {
+    if (_lvPlaying) {
+      // Pause
+      _lvPlaying = false;
+      if (_lvVideoInterval) { clearInterval(_lvVideoInterval); _lvVideoInterval = null; }
+      document.getElementById('lv-play-pause').textContent = '▶ Play';
+    } else {
+      // Resume
+      _lvPlaying = true;
+      document.getElementById('lv-play-pause').textContent = '⏸ Pause';
+      _lvVideoInterval = setInterval(() => {
+        if (!_lvPlaying || !_lvFrameUrls) return;
+        _lvCurrentFrame = (_lvCurrentFrame + 1) % _lvFrameUrls.length;
+        _updateLvFrame(_lvCurrentFrame);
+      }, 2000);
+    }
   });
 }
 
@@ -1297,10 +1841,17 @@ async function init() {
   initModal();
   initWordModal();
   initLightbox();
+  initLockedVideoControls();
   initSocket();
 
   document.getElementById('archive-list').addEventListener('click', e => {
-    if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
+    if (e.target.matches('img') && e.target.src) {
+      const card = e.target.closest('[data-frame-urls]');
+      let frameUrls = null;
+      try { frameUrls = card ? JSON.parse(card.dataset.frameUrls || '[]') : null; } catch {}
+      openLightbox(e.target.src, frameUrls, 0);
+      return;
+    }
     const sb = e.target.closest('.share-btn');
     if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
     const likeBtn = e.target.closest('.like-btn');
@@ -1317,14 +1868,11 @@ async function init() {
 
   initGiftModal();
 
-  // Landing-screen CTA — opens the same New Session flow as the header button.
   document.getElementById('cta-create-artwork').addEventListener('click', () => {
     const headerBtn = document.getElementById('new-session-btn');
     if (!headerBtn.disabled) headerBtn.click();
   });
 
-  // Share controls live in both the locked view and archive cards — handle
-  // them with one delegated listener.
   document.addEventListener('click', e => {
     const copyBtn = e.target.closest('[data-share-copy]');
     if (copyBtn) { copyShareLink(parseInt(copyBtn.dataset.shareCopy), copyBtn); return; }
