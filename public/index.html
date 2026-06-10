@@ -228,7 +228,7 @@
       <div id="words-stage">
         <!-- Words panel (centered) -->
         <div id="words-panel">
-          <p class="section-label mb-4">10 Words</p>
+          <p class="section-label mb-4">5 Words</p>
           <div id="word-chips" class="flex flex-wrap gap-2"></div>
           <p id="words-hint" class="text-xs text-zinc-500 mt-4">Click a word to change it (costs 1 credit + bid)</p>
         </div>
@@ -252,7 +252,7 @@
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
           <div>
-            <p class="section-label mb-2.5">10 Words</p>
+            <p class="section-label mb-2.5">5 Words</p>
             <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
           </div>
           <div>
@@ -291,13 +291,13 @@
   <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
     <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
       <h2 class="text-lg font-semibold mb-1">Create Artwork</h2>
-      <p class="text-sm text-zinc-500 mb-4">Give your artwork a name, then enter 10 words that will inspire it.</p>
+      <p class="text-sm text-zinc-500 mb-4">Give your artwork a name, then enter 5 words that will inspire it.</p>
       <input id="modal-name" type="text" placeholder="Artwork name (e.g. Cosmic Dream)" maxlength="80"
         class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
       <div class="relative mb-1">
-        <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass shadow red silk dream echo"
+        <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass"
           class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
-        <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 10</span>
+        <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 5</span>
       </div>
       <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
       <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
@@ -994,7 +994,7 @@ function updateGiftBadge(sessionId, total) {
 }
 
 // ─── Sharing utilities (network share dialogs) ────────────────────────────────
-// Build descriptive share text from an artwork's name + its 10 words.
+// Build descriptive share text from an artwork's name + its 5 words.
 // `artwork.words` may be an array (locked view) or a comma string (archive).
 function buildShareText(artwork) {
   const name = (artwork.name || 'Untitled').trim();
@@ -1002,7 +1002,7 @@ function buildShareText(artwork) {
     ? artwork.words
     : String(artwork.words || '').split(',');
   const wordList = words.map(w => w.trim()).filter(Boolean).join(', ');
-  let text = `"${name}" — AI artwork from 10 words`;
+  let text = `"${name}" — AI artwork from 5 words`;
   if (wordList) text += `: ${wordList}`;
   text += ' · Made on Artwork Workspace';
   return text;
@@ -1222,10 +1222,10 @@ function initModal() {
   function updateWordCount() {
     const words = parseInputWords(wordsInp.value);
     const count = words.length;
-    countEl.textContent = `${count} / 10`;
+    countEl.textContent = `${count} / 5`;
     countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
-      (count === 10 ? 'text-emerald-400' : 'text-zinc-500');
-    create.disabled = !(nameInp.value.trim() && count === 10);
+      (count === 5 ? 'text-emerald-400' : 'text-zinc-500');
+    create.disabled = !(nameInp.value.trim() && count === 5);
   }
 
   wordsInp.addEventListener('input', updateWordCount);
@@ -1245,7 +1245,7 @@ function initModal() {
     const name  = nameInp.value.trim();
     const words = parseInputWords(wordsInp.value);
     if (!name) { errEl.textContent = 'Please enter an artwork name.'; errEl.classList.remove('hidden'); return; }
-    if (words.length !== 10) { errEl.textContent = 'Please enter exactly 10 words.'; errEl.classList.remove('hidden'); return; }
+    if (words.length !== 5) { errEl.textContent = 'Please enter exactly 5 words.'; errEl.classList.remove('hidden'); return; }
     create.disabled = true; create.textContent = 'Creating…'; errEl.classList.add('hidden');
     try {
       const { session } = await api('POST', '/api/session', { name, words });

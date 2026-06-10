@@ -281,7 +281,7 @@ app.post('/api/session', async (req, res) => {
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
 
     const words = parseWords(rawWords);
-    if (words.length !== 10) return res.status(400).json({ error: 'Exactly 10 words required' });
+    if (words.length !== 5) return res.status(400).json({ error: 'Exactly 5 words required' });
     if (words.some(w => w.length > 30)) return res.status(400).json({ error: 'Each word must be 30 characters or fewer' });
 
     const { rows: existing } = await pool.query(
@@ -403,8 +403,8 @@ app.post('/api/session/:id/change-word', async (req, res) => {
     const { wordIndex, newWord, bidAmount: rawBid } = req.body;
     const bidAmount = parseInt(rawBid);
 
-    if (wordIndex === undefined || wordIndex < 0 || wordIndex > 9) {
-      return res.status(400).json({ error: 'wordIndex must be 0–9' });
+    if (wordIndex === undefined || wordIndex < 0 || wordIndex > 4) {
+      return res.status(400).json({ error: 'wordIndex must be 0–4' });
     }
     const trimmedWord = String(newWord || '').trim();
     if (!trimmedWord) return res.status(400).json({ error: 'Word cannot be empty' });
