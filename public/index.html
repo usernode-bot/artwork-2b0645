@@ -2,7 +2,7 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <script>
   // usernode-dev-console@1
@@ -64,13 +64,25 @@
   })();
   </script>
 
-  <title>Artwork Workspace</title>
+  <title>Art Work</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#7c3aed">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Art Work">
+  <meta name="description" content="Upload and manage your artwork, and discover, like, comment on and save creations from other artists.">
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
   <!-- Usernode bridge: centrally hosted, never vendored. Provides the on-chain
-       wallet API (getNodeAddress / sendTransaction) used by the gift feature.
-       Served with no-cache so fixes propagate fleet-wide on the next load. -->
+       wallet API (getNodeAddress / sendTransaction). Served with no-cache so
+       fixes propagate fleet-wide on the next load. -->
   <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -78,86 +90,19 @@
   <style>
     /* ── Design tokens ───────────────────────────────────────────────── */
     :root {
-      --header-h: 52px;          /* single source of truth for header height */
+      --header-h: 56px;
+      --tabbar-h: 60px;
       --accent: #7c3aed;         /* violet-600 — the one primary accent */
       --accent-hover: #8b5cf6;   /* violet-500 */
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
     }
     html { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
     body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
-    /* Shared section label (uppercase tracked caption) */
     .section-label {
       font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em;
       text-transform: uppercase; color: #71717a;
     }
-
-    /* ── Session view (responsive two-column → stacked) ──────────────── */
-    #session-view {
-      position: fixed;
-      top: var(--header-h); left: 0; right: 0; bottom: 0;
-      z-index: 15;
-      background: #09090b;
-      flex-direction: column;
-    }
-    #words-stage {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-      min-height: 0;
-      padding: 24px 264px 24px 24px;   /* reserve room for floating panel */
-    }
-    #words-panel { max-width: 640px; width: 100%; }
-    #auction-panel {
-      position: absolute;
-      top: 12px; right: 12px; bottom: 12px;
-      width: 240px;
-      z-index: 10;
-      overflow-y: auto;
-    }
-    /* On narrow viewports, stop floating the auction panel: stack it below
-       the words so nothing overlaps. */
-    @media (max-width: 720px) {
-      #words-stage {
-        flex-direction: column;
-        align-items: stretch;
-        justify-content: flex-start;
-        padding: 20px;
-        gap: 16px;
-        overflow-y: auto;
-      }
-      #words-panel { max-width: none; }
-      #auction-panel {
-        position: static;
-        width: 100%;
-        top: auto; right: auto; bottom: auto;
-      }
-    }
-
-    #countdown-ring { transition: stroke-dashoffset 1s linear; }
-
-    /* ── Word chips (one definition, two sizes) ──────────────────────── */
-    .word-chip, .chip-sm {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      border-radius: 9999px;
-      font-weight: 500;
-      background: rgba(124,58,237,0.15);
-      border: 1px solid rgba(124,58,237,0.35);
-      color: #c4b5fd;
-      user-select: none;
-    }
-    .word-chip { padding: 6px 14px; font-size: 0.875rem; cursor: default; transition: background 0.12s, border-color 0.12s; }
-    .chip-sm   { padding: 2px 9px; font-size: 0.72rem; }
-    .word-chip.editable { cursor: pointer; }
-    .word-chip.editable:hover {
-      background: rgba(124,58,237,0.28);
-      border-color: rgba(124,58,237,0.6);
-    }
-    .word-chip .edit-icon { opacity: 0; font-size: 0.7rem; transition: opacity 0.12s; }
-    .word-chip.editable:hover .edit-icon { opacity: 1; }
 
     /* ── Buttons (unified pill styles) ───────────────────────────────── */
     .btn {
@@ -171,7 +116,6 @@
     .btn-primary:not(:disabled):hover { background: var(--accent-hover); }
     .btn-secondary { background: #27272a; color: #e4e4e7; border-color: #3f3f46; }
     .btn-secondary:not(:disabled):hover { background: #3f3f46; }
-    /* Small icon pill used in archive cards (like / download / share) */
     .pill {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 5px 10px; border-radius: 9999px; font-size: 0.72rem; font-weight: 500;
@@ -185,194 +129,160 @@
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #52525b; }
 
-    #lightbox { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
-    #lightbox.lb-open { opacity: 1; pointer-events: auto; }
-    #lightbox-img.lb-zoomed { transform: scale(2); cursor: zoom-out !important; }
+    /* ── App layout ──────────────────────────────────────────────────── */
+    /* Reserve space for the fixed header and (on mobile) the bottom tab bar. */
+    #app-main {
+      padding-top: var(--header-h);
+      padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 8px);
+      min-height: 100vh;
+    }
+    @media (min-width: 640px) {
+      #app-main { padding-bottom: 24px; }  /* no bottom bar on ≥sm */
+    }
+
+    /* Top-nav links (≥sm) */
+    .topnav-link {
+      font-size: 0.85rem; font-weight: 600; color: #a1a1aa;
+      padding: 6px 10px; border-radius: 8px; transition: color 0.12s, background 0.12s;
+    }
+    .topnav-link:hover { color: #e4e4e7; background: #27272a; }
+    .topnav-link.active { color: #fff; background: var(--accent); }
+
+    /* Bottom tab bar (mobile) */
+    #tabbar {
+      height: calc(var(--tabbar-h) + var(--safe-bottom));
+      padding-bottom: var(--safe-bottom);
+    }
+    .tab {
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 2px; color: #71717a; font-size: 0.62rem; font-weight: 600;
+      transition: color 0.12s; position: relative; user-select: none;
+    }
+    .tab .tab-icon { font-size: 1.25rem; line-height: 1; }
+    .tab.active { color: var(--accent-hover); }
+    /* Center "Upload" tab gets a raised accent puck */
+    .tab.tab-upload .tab-icon {
+      width: 44px; height: 44px; margin-top: -14px; border-radius: 9999px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--accent); color: #fff; box-shadow: 0 6px 16px rgba(124,58,237,0.45);
+    }
+    .tab.tab-upload.active .tab-icon { background: var(--accent-hover); }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .empty-card {
+      border: 1px dashed #3f3f46; background: #18181b; border-radius: 16px;
+      padding: 40px 24px; text-align: center; color: #71717a;
+    }
   </style>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
 
   <!-- Header -->
-  <header id="app-header" class="sticky top-0 z-20 bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-4 flex items-center justify-between gap-4" style="height:var(--header-h);flex-shrink:0">
-    <h1 class="text-base font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork Workspace</h1>
-    <div class="flex items-center flex-shrink-0 gap-3">
-      <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
-      <span id="username-display" class="text-sm text-zinc-400"></span>
-      <button id="new-session-btn" class="btn btn-primary" disabled>+ New Session</button>
+  <header id="app-header"
+    class="fixed top-0 inset-x-0 z-30 bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-4 flex items-center justify-between gap-4"
+    style="height:var(--header-h)">
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-lg">🎨</span>
+      <h1 class="text-base font-bold tracking-tight whitespace-nowrap">Art Work</h1>
+      <span id="staging-badge"
+        class="hidden text-[0.6rem] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">Staging</span>
+    </div>
+
+    <!-- Top nav (≥sm) -->
+    <nav class="hidden sm:flex items-center gap-1" id="topnav">
+      <a href="#feed" data-route="feed" class="topnav-link">Feed</a>
+      <a href="#search" data-route="search" class="topnav-link">Search</a>
+      <a href="#upload" data-route="upload" class="topnav-link">Upload</a>
+      <a href="#notifications" data-route="notifications" class="topnav-link">Activity</a>
+      <a href="#profile" data-route="profile" class="topnav-link">Profile</a>
+    </nav>
+
+    <div class="flex items-center gap-3 flex-shrink-0">
+      <span id="username-display" class="text-sm text-zinc-400 hidden sm:inline"></span>
     </div>
   </header>
 
   <!-- Main -->
-  <div class="flex-1 p-4 flex flex-col gap-4">
+  <main id="app-main" class="max-w-5xl mx-auto px-4">
 
-    <!-- No active session -->
-    <div id="no-session-view" class="flex flex-col items-center justify-center py-24 text-zinc-500">
-      <div class="text-6xl mb-5">🖼️</div>
-      <p class="text-lg font-semibold text-zinc-300 mb-1.5">No active session</p>
-      <p class="text-sm text-zinc-500 mb-7">Create a new session to start a collaborative artwork.</p>
-      <button id="cta-create-artwork"
-        class="inline-flex items-center gap-2 px-8 py-4 bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-lg font-semibold rounded-xl shadow-lg shadow-violet-900/40 hover:shadow-violet-700/50 transition-all hover:-translate-y-0.5">
-        🎨 Create Artwork
-      </button>
-    </div>
-
-    <!-- Active / Auction session (full-screen fixed overlay) -->
-    <div id="session-view" style="display:none">
-      <!-- Compact info strip -->
-      <div class="flex-shrink-0 flex items-center gap-2 px-3 bg-zinc-900 border-b border-zinc-800" style="height:34px">
-        <span class="font-semibold text-white text-sm truncate max-w-xs" id="sv-name"></span>
-        <span class="text-zinc-500 text-xs flex-shrink-0">by <span class="text-zinc-300" id="sv-creator"></span></span>
-        <span id="sv-badge" class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"></span>
+    <!-- Feed -->
+    <section id="view-feed" class="view py-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">Feed</h2>
       </div>
+      <div class="empty-card">
+        <div class="text-4xl mb-3">🖼️</div>
+        <p class="text-zinc-300 font-semibold mb-1">No artwork yet</p>
+        <p class="text-sm">The community feed will appear here. Be the first to
+          <a href="#upload" class="text-violet-400 hover:text-violet-300 font-medium">upload a piece</a>.</p>
+      </div>
+    </section>
 
-      <!-- Words + auction area -->
-      <div id="words-stage">
-        <!-- Words panel (centered) -->
-        <div id="words-panel">
-          <p class="section-label mb-4">10 Words</p>
-          <div id="word-chips" class="flex flex-wrap gap-2"></div>
-          <p id="words-hint" class="text-xs text-zinc-500 mt-4">Click a word to change it (costs 1 credit + bid)</p>
+    <!-- Search -->
+    <section id="view-search" class="view py-5">
+      <h2 class="text-xl font-bold mb-4">Search</h2>
+      <div class="flex items-center gap-2 mb-4">
+        <input type="search" placeholder="Search artwork or @artist" disabled
+          class="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2.5 text-sm outline-none placeholder:text-zinc-600">
+        <button class="btn btn-secondary" disabled>Filter</button>
+      </div>
+      <div class="empty-card">
+        <div class="text-4xl mb-3">🔍</div>
+        <p class="text-zinc-300 font-semibold mb-1">Search coming soon</p>
+        <p class="text-sm">Find artwork by category or artist once uploads are live.</p>
+      </div>
+    </section>
+
+    <!-- Upload -->
+    <section id="view-upload" class="view py-5">
+      <h2 class="text-xl font-bold mb-4">Upload</h2>
+      <div class="empty-card">
+        <div class="text-4xl mb-3">➕</div>
+        <p class="text-zinc-300 font-semibold mb-1">Share your artwork</p>
+        <p class="text-sm mb-5">Pick an image, add a title, description and category — coming in the next build.</p>
+        <button class="btn btn-primary" disabled>🎨 Choose image</button>
+      </div>
+    </section>
+
+    <!-- Notifications -->
+    <section id="view-notifications" class="view py-5">
+      <h2 class="text-xl font-bold mb-4">Activity</h2>
+      <div class="empty-card">
+        <div class="text-4xl mb-3">🔔</div>
+        <p class="text-zinc-300 font-semibold mb-1">Nothing here yet</p>
+        <p class="text-sm">Likes, comments and saves on your artwork will show up here.</p>
+      </div>
+    </section>
+
+    <!-- Profile -->
+    <section id="view-profile" class="view py-5">
+      <div class="flex items-center gap-4 mb-6">
+        <div class="w-16 h-16 rounded-full bg-gradient-to-br from-violet-600 to-pink-600 flex items-center justify-center text-2xl flex-shrink-0">🎨</div>
+        <div class="min-w-0">
+          <p id="profile-name" class="text-lg font-bold truncate">@you</p>
+          <p class="text-sm text-zinc-500">Your gallery &amp; saved artwork</p>
         </div>
-
-        <!-- Floating auction panel (right) -->
-        <div id="auction-panel" class="bg-zinc-900/96 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl p-4 flex flex-col gap-3">
-          <!-- filled by renderAuctionPanel() -->
-        </div>
       </div>
-    </div>
-
-    <!-- Locked session (just generated) -->
-    <div id="locked-view" class="hidden">
-      <div class="bg-zinc-900 rounded-2xl border border-zinc-800 p-6">
-        <div class="flex items-center gap-3 mb-5">
-          <span class="text-2xl">🔒</span>
-          <div>
-            <p class="font-semibold text-white text-lg leading-tight" id="lv-name"></p>
-            <p class="text-xs text-zinc-500 mt-0.5">Session locked · artwork generated</p>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          <div>
-            <p class="section-label mb-2.5">10 Words</p>
-            <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
-          </div>
-          <div>
-            <p class="section-label mb-2.5">Generated Artwork</p>
-            <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-xl aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
-            <button id="lv-download" class="btn btn-secondary w-full mt-3">⬇️ Download image</button>
-            <button id="lv-gift"
-              class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-none disabled:bg-zinc-800">
-              🎁 <span id="lv-gift-label">Send a gift</span>
-            </button>
-            <div id="lv-share" class="flex items-center gap-2 mt-2"></div>
-          </div>
-        </div>
-        <p class="mt-4 text-sm text-zinc-400 italic" id="lv-prompt"></p>
-        <p class="text-xs text-zinc-500 mt-1" id="lv-winner"></p>
+      <div class="empty-card">
+        <div class="text-4xl mb-3">👤</div>
+        <p class="text-zinc-300 font-semibold mb-1">Your profile</p>
+        <p class="text-sm">Your uploads, saved favorites and management dashboard will live here.</p>
       </div>
-    </div>
+    </section>
 
-  </div>
+  </main>
 
-  <!-- Archive -->
-  <div class="px-4 pb-8">
-    <div class="flex items-center justify-between gap-4 mb-3">
-      <h2 class="section-label">Session Archive</h2>
-      <div id="archive-cols" class="flex items-center gap-1.5">
-        <span class="text-xs text-zinc-500 mr-1 hidden sm:inline">Columns</span>
-        <div id="archive-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
-      </div>
-    </div>
-    <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-      <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
-    </div>
-  </div>
-
-  <!-- New Session Modal -->
-  <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-      <h2 class="text-lg font-semibold mb-1">New Session</h2>
-      <p class="text-sm text-zinc-500 mb-4">Give your session a name, then enter 10 words that will inspire the artwork.</p>
-      <input id="modal-name" type="text" placeholder="Session name (e.g. Cosmic Dream)" maxlength="80"
-        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
-      <div class="relative mb-1">
-        <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass shadow red silk dream echo"
-          class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
-        <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 10</span>
-      </div>
-      <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
-      <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
-      <div class="flex gap-2">
-        <button id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
-        <button id="modal-create" class="btn btn-primary flex-1" disabled>Create</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Word Edit Modal -->
-  <div id="word-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-xs shadow-2xl">
-      <h2 class="text-base font-semibold mb-0.5">Change Word</h2>
-      <p class="text-xs text-zinc-500 mb-4">Replacing: <span id="wm-current" class="text-violet-300 font-medium"></span></p>
-      <input id="wm-word" type="text" placeholder="New word" maxlength="30"
-        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
-      <div class="mb-3">
-        <label class="text-xs text-zinc-500 block mb-1">Bid amount <span class="text-zinc-600">(must exceed current highest)</span></label>
-        <input id="wm-bid" type="number" min="1"
-          class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors">
-      </div>
-      <p class="text-xs text-zinc-500 mb-1">Your credits: <span id="wm-credits" class="text-violet-300 font-medium"></span></p>
-      <p class="text-xs text-zinc-600 mb-4">Cost: bid amount + 1 credit word-change fee</p>
-      <div id="wm-error" class="hidden text-red-400 text-xs mb-3"></div>
-      <div class="flex gap-2">
-        <button id="wm-cancel" class="btn btn-secondary flex-1">Cancel</button>
-        <button id="wm-submit" class="btn btn-primary flex-1">Change & Bid</button>
-      </div>
-    </div>
-  </div>
-
-<!-- Lightbox -->
-<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image lightbox"
-  class="fixed inset-0 z-50 overflow-auto"
-  style="background: rgba(0,0,0,0.87)">
-  <div class="min-h-full flex items-center justify-center p-4">
-    <img id="lightbox-img" src="" alt="Full-size artwork"
-      class="max-w-full object-contain rounded-lg shadow-2xl transition-transform duration-200"
-      style="transform-origin: center; cursor: zoom-in; max-height: calc(100vh - 2rem)">
-  </div>
-  <button id="lightbox-close" aria-label="Close"
-    class="fixed top-4 right-4 w-11 h-11 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-600 text-white text-2xl font-normal transition-colors border border-zinc-700">
-    &times;
-  </button>
-</div>
-
-<!-- Gift modal — sends real on-chain funds via the wallet, NOT in-app credits -->
-<div id="gift-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-  <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-    <h2 class="text-lg font-semibold text-white mb-1">🎁 Send a gift</h2>
-    <p class="text-xs text-zinc-500 mb-4">Tip the artwork owner with on-chain funds from your linked wallet. This is separate from your in-app credits.</p>
-
-    <div id="gift-staging-banner" class="hidden mb-3 text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2">
-      Staging — no real funds sent. This records a demo gift only.
-    </div>
-
-    <div class="mb-3 text-xs text-zinc-400">
-      To <span class="text-violet-300 font-medium">@<span id="gift-owner-name"></span></span>
-      <span class="block mt-1 font-mono text-zinc-500 text-[11px] break-all" id="gift-owner-addr"></span>
-    </div>
-
-    <label class="text-xs text-zinc-500 block mb-1">Amount</label>
-    <input id="gift-amount" type="number" min="0" step="any" placeholder="0.0"
-      class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors mb-1">
-    <p class="text-xs text-zinc-600 mb-4">Sent from your wallet on-chain.</p>
-
-    <div id="gift-error" class="hidden text-red-400 text-xs mb-3"></div>
-    <div class="flex gap-2">
-      <button id="gift-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
-      <button id="gift-submit" class="flex-1 px-4 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors">Send Gift</button>
-    </div>
-  </div>
-</div>
+  <!-- Bottom tab bar (mobile only) -->
+  <nav id="tabbar"
+    class="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-zinc-900/95 backdrop-blur border-t border-zinc-800 flex items-stretch">
+    <a href="#feed" data-route="feed" class="tab"><span class="tab-icon">🏠</span><span>Feed</span></a>
+    <a href="#search" data-route="search" class="tab"><span class="tab-icon">🔍</span><span>Search</span></a>
+    <a href="#upload" data-route="upload" class="tab tab-upload"><span class="tab-icon">＋</span><span>Upload</span></a>
+    <a href="#notifications" data-route="notifications" class="tab"><span class="tab-icon">🔔</span><span>Activity</span></a>
+    <a href="#profile" data-route="profile" class="tab"><span class="tab-icon">👤</span><span>Profile</span></a>
+  </nav>
 
 <script>
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -380,71 +290,10 @@ const params = new URLSearchParams(location.search);
 const token  = params.get('token') || '';
 const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
 
-let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
-let wordEditIndex = -1;
-let socket;
+let me = null;
+let socket = null;
 
-// ─── Archive column preference ──────────────────────────────────────────────────
-const ARCHIVE_COLS_KEY = 'archive-columns';
-const ARCHIVE_COL_OPTIONS = ['auto', '1', '2', '3', '4', '5'];
-let archiveCols = 'auto'; // in-memory fallback when localStorage is unavailable
-
-function loadArchiveCols() {
-  try {
-    const v = localStorage.getItem(ARCHIVE_COLS_KEY);
-    if (ARCHIVE_COL_OPTIONS.includes(v)) { archiveCols = v; return; }
-    if (v !== null) localStorage.removeItem(ARCHIVE_COLS_KEY); // corrupt/invalid → reset
-  } catch (e) { /* storage unavailable — use in-memory default */ }
-  archiveCols = 'auto';
-}
-
-function setArchiveCols(v) {
-  if (!ARCHIVE_COL_OPTIONS.includes(v)) v = 'auto';
-  archiveCols = v;
-  try { localStorage.setItem(ARCHIVE_COLS_KEY, v); } catch (e) { /* keep in-memory */ }
-  applyArchiveCols();
-}
-
-// Clamp a user-chosen column count to something usable at the current viewport.
-function effectiveArchiveCols() {
-  if (archiveCols === 'auto') return null;
-  let n = parseInt(archiveCols, 10);
-  const w = window.innerWidth;
-  if (w < 640) n = Math.min(n, 2);
-  else if (w < 1024) n = Math.min(n, 3);
-  return n;
-}
-
-function applyArchiveCols() {
-  const el = document.getElementById('archive-list');
-  if (el) {
-    const n = effectiveArchiveCols();
-    // 'auto' → clear inline style so the responsive grid-cols-* classes resume.
-    el.style.gridTemplateColumns = n === null ? '' : `repeat(${n}, minmax(0, 1fr))`;
-  }
-  renderArchiveColsControl();
-}
-
-function renderArchiveColsControl() {
-  const group = document.getElementById('archive-cols-group');
-  if (!group) return;
-  group.innerHTML = ARCHIVE_COL_OPTIONS.map(opt => {
-    const active = opt === archiveCols;
-    const label = opt === 'auto' ? 'Auto' : opt;
-    return `<button type="button" data-archive-col="${opt}"
-      class="px-2 py-1 rounded-md text-xs font-medium transition-colors ${active
-        ? 'bg-violet-600 text-white'
-        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">${label}</button>`;
-  }).join('');
-}
-
-let _archiveResizeTimer;
-function onArchiveResize() {
-  clearTimeout(_archiveResizeTimer);
-  _archiveResizeTimer = setTimeout(applyArchiveCols, 150);
-}
-
-// ─── API ──────────────────────────────────────────────────────────────────────
+// ─── API ────────────────────────────────────────────────────────────────────
 async function api(method, path, body) {
   const opts = { method, headers: hdrs() };
   if (body !== undefined) opts.body = JSON.stringify(body);
@@ -454,914 +303,82 @@ async function api(method, path, body) {
   return data;
 }
 
-// ─── Word helpers ─────────────────────────────────────────────────────────────
-function getWords(session) {
-  if (!session?.words) return [];
-  if (Array.isArray(session.words)) return session.words;
-  return session.words.split(',').filter(Boolean);
+// ─── Hash router ──────────────────────────────────────────────────────────────
+// Mobile-first tab shell. Routes map 1:1 to the five primary views; the first
+// path segment of the hash selects the view (e.g. #profile/alice → profile).
+const ROUTES = ['feed', 'search', 'upload', 'notifications', 'profile'];
+const DEFAULT_ROUTE = 'feed';
+
+function currentRoute() {
+  const seg = location.hash.replace(/^#\/?/, '').split('/')[0];
+  return ROUTES.includes(seg) ? seg : DEFAULT_ROUTE;
 }
 
-function parseInputWords(str) {
-  return String(str || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
-}
+function renderRoute() {
+  const route = currentRoute();
 
-function renderWordChips(container, words, editable) {
-  container.innerHTML = '';
-  words.forEach((word, i) => {
-    const chip = document.createElement('span');
-    chip.className = 'word-chip' + (editable ? ' editable' : '');
-    chip.innerHTML = esc(word) + (editable ? '<span class="edit-icon">✏️</span>' : '');
-    if (editable) {
-      chip.addEventListener('click', () => openWordModal(i, word));
-    }
-    container.appendChild(chip);
+  document.querySelectorAll('.view').forEach((v) => {
+    v.classList.toggle('active', v.id === `view-${route}`);
   });
-}
-
-function renderSmallWordChips(container, words) {
-  container.innerHTML = '';
-  words.forEach(word => {
-    const chip = document.createElement('span');
-    chip.className = 'chip-sm';
-    chip.textContent = word;
-    container.appendChild(chip);
+  document.querySelectorAll('[data-route]').forEach((el) => {
+    el.classList.toggle('active', el.getAttribute('data-route') === route);
   });
+
+  // Scroll the freshly shown view to the top.
+  const main = document.getElementById('app-main');
+  if (main) main.scrollTop = 0;
+  window.scrollTo(0, 0);
 }
 
-// ─── Render ───────────────────────────────────────────────────────────────────
-function renderHeader() {
-  document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
-  document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
-  document.getElementById('new-session-btn').disabled =
-    !!(activeSession && (activeSession.state === 'active' || activeSession.state === 'auction'));
-}
+window.addEventListener('hashchange', renderRoute);
 
-function renderMain() {
-  const noView   = document.getElementById('no-session-view');
-  const sessView = document.getElementById('session-view');
-  const lockView = document.getElementById('locked-view');
-
-  noView.classList.add('hidden');
-  sessView.style.display = 'none';
-  lockView.classList.add('hidden');
-
-  if (!activeSession) {
-    if (lockedSessionData) { renderLockedView(lockedSessionData); lockView.classList.remove('hidden'); }
-    else noView.classList.remove('hidden');
-    return;
-  }
-
-  if (activeSession.state === 'active' || activeSession.state === 'auction') {
-    sessView.style.display = 'flex';
-
-    document.getElementById('sv-name').textContent    = activeSession.name;
-    document.getElementById('sv-creator').textContent = `@${activeSession.creator_username}`;
-
-    const badge = document.getElementById('sv-badge');
-    if (activeSession.state === 'active') {
-      badge.textContent = 'Active';
-      badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-900/50 text-emerald-400 flex-shrink-0';
-    } else {
-      badge.textContent = 'Auction';
-      badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-amber-900/50 text-amber-400 flex-shrink-0';
-    }
-
-    const words = getWords(activeSession);
-    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
-    renderWordChips(document.getElementById('word-chips'), words, editable);
-
-    const hintEl = document.getElementById('words-hint');
-    if (hintEl) hintEl.style.display = editable ? '' : 'none';
-
-    renderAuctionPanel();
-  }
-}
-
-function renderAuctionPanel() {
-  const panel = document.getElementById('auction-panel');
-  if (!activeSession || !me) { panel.innerHTML = ''; return; }
-
-  const isLeader   = me.id === activeSession.current_leader_user_id;
-  const currentBid = parseInt(activeSession.current_bid) || 0;
-  const minNext    = currentBid ? Math.ceil(currentBid * 1.01) : 1;
-
-  if (activeSession.state === 'active') {
-    panel.innerHTML = `
-      <p class="section-label mb-3">Auction</p>
-      <p class="text-sm text-zinc-400 mb-4">Place the first bid to start generating an AI artwork from these words.</p>
-      <div class="flex gap-2 mb-2">
-        <input id="bid-input" type="number" min="1" value="1"
-          class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0"
-          placeholder="Credits">
-        <button id="bid-btn" class="btn btn-primary">Bid</button>
-      </div>
-      <p class="text-xs text-zinc-600">Min bid: 1 credit</p>`;
-    document.getElementById('bid-btn').addEventListener('click', handleBid);
-    document.getElementById('bid-input').addEventListener('keydown', e => { if (e.key==='Enter') handleBid(); });
-    return;
-  }
-
-  if (activeSession.state === 'auction') {
-    const remaining    = activeSession._remaining !== undefined ? activeSession._remaining : 30;
-    const circumference = 2 * Math.PI * 20;
-    const dashOffset   = circumference * (1 - Math.max(0, Math.min(1, remaining / 30)));
-    const ringColor    = remaining <= 5 ? '#ef4444' : remaining <= 10 ? '#f59e0b' : '#7c3aed';
-
-    let actionHtml = '';
-    if (auctionEnded) {
-      actionHtml = isLeader
-        ? `<button id="generate-btn" class="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold">✨ Generate Artwork</button>`
-        : `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
-    } else if (isLeader) {
-      actionHtml = `
-        <div class="bg-violet-900/30 border border-violet-700/50 rounded-lg p-3 text-center mb-2">
-          <p class="text-violet-300 text-sm font-medium">You're winning!</p>
-        </div>
-        <div class="flex gap-2">
-          <input id="bid-input" type="number" min="${minNext}" value="${minNext}" class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0">
-          <button id="bid-btn" class="btn btn-primary">Overbid</button>
-        </div>`;
-    } else {
-      actionHtml = `
-        <div class="flex gap-2">
-          <input id="bid-input" type="number" min="${minNext}" value="${minNext}" class="flex-1 bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2 text-sm outline-none w-0">
-          <button id="bid-btn" class="btn btn-primary">Outbid</button>
-        </div>
-        <p class="text-xs text-zinc-600">Min: ${minNext} credits</p>`;
-    }
-
-    panel.innerHTML = `
-      <p class="section-label mb-3">Live Auction</p>
-      <div class="flex items-center justify-between mb-4">
-        <div>
-          <p class="text-xl font-bold text-white">${currentBid} <span class="text-sm font-normal text-zinc-400">credits</span></p>
-          <p class="text-xs text-zinc-500">Leader: <span class="text-violet-300">@${activeSession.current_leader_username || '—'}</span></p>
-        </div>
-        <div class="relative w-12 h-12 flex-shrink-0">
-          <svg class="w-12 h-12 -rotate-90" viewBox="0 0 48 48">
-            <circle cx="24" cy="24" r="20" fill="none" stroke="#27272a" stroke-width="4"/>
-            <circle id="countdown-ring" cx="24" cy="24" r="20" fill="none"
-              stroke="${ringColor}" stroke-width="4" stroke-linecap="round"
-              stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
-          </svg>
-          <span id="countdown-text" class="absolute inset-0 flex items-center justify-center text-xs font-bold">${auctionEnded ? '0' : remaining}</span>
-        </div>
-      </div>
-      <div class="flex flex-col gap-2">${actionHtml}</div>`;
-
-    const bidBtn = document.getElementById('bid-btn');
-    if (bidBtn) {
-      bidBtn.addEventListener('click', handleBid);
-      document.getElementById('bid-input')?.addEventListener('keydown', e => { if (e.key==='Enter') handleBid(); });
-    }
-    const genBtn = document.getElementById('generate-btn');
-    if (genBtn) genBtn.addEventListener('click', handleGenerate);
-  }
-}
-
-function updateCountdown(remaining) {
-  if (!activeSession || activeSession.state !== 'auction') return;
-  activeSession._remaining = remaining;
-  const textEl = document.getElementById('countdown-text');
-  const ringEl = document.getElementById('countdown-ring');
-  if (!textEl || !ringEl) return;
-  const circumference = 2 * Math.PI * 20;
-  ringEl.style.strokeDashoffset = circumference * (1 - Math.max(0, Math.min(1, remaining/30)));
-  ringEl.setAttribute('stroke', remaining<=5 ? '#ef4444' : remaining<=10 ? '#f59e0b' : '#7c3aed');
-  textEl.textContent = remaining;
-}
-
-function renderLockedView(data) {
-  document.getElementById('lv-name').textContent   = data.name;
-  document.getElementById('lv-artwork').src        = data.image_url || '';
-  document.getElementById('lv-prompt').textContent = data.prompt || '';
-  document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username || '?'} · ${data.winning_bid || data.current_bid || '?'} credits`;
-  const words = getWords(data);
-  renderSmallWordChips(document.getElementById('lv-words'), words);
-
-  const dlBtn = document.getElementById('lv-download');
-  if (dlBtn) {
-    const hasImage = !!data.image_url;
-    dlBtn.disabled = !hasImage;
-    dlBtn.onclick = hasImage ? () => downloadArtwork(data.id, dlBtn) : null;
-  }
-
-  const giftBtn = document.getElementById('lv-gift');
-  if (giftBtn) {
-    const ownerName = data.owner_username || data.winner_username || '';
-    const reason = giftDisabledReason({
-      owner_pubkey: data.owner_pubkey,
-      owner_user_id: data.owner_user_id
-    });
-    giftBtn.disabled = !!reason;
-    giftBtn.title = reason || 'Send an on-chain gift to this artwork';
-    const labelEl = document.getElementById('lv-gift-label');
-    if (labelEl) labelEl.textContent = reason ? (reason.length < 28 ? reason : 'Gift unavailable') : 'Send a gift';
-    giftBtn.onclick = reason ? null : () => openGiftModal({
-      sessionId: data.id,
-      ownerName,
-      ownerPubkey: data.owner_pubkey,
-      onSuccess: total => {
-        if (lockedSessionData) lockedSessionData.gift_total = total;
-        renderArchive();
-      }
-    });
-  }
-
-  const shareEl = document.getElementById('lv-share');
-  if (shareEl) shareEl.innerHTML = data.id ? shareButtonsHtml(data.id, data.name) : '';
-}
-
-// Why the gift button should be disabled for a given artwork, or null if it's
-// giftable by the current user. Covers: owner has no linked wallet, current
-// user has no linked wallet, and self-gifting.
-function giftDisabledReason(artwork) {
-  if (!artwork || !artwork.owner_pubkey) return "Creator hasn't linked a wallet yet";
-  if (!me || !me.usernode_pubkey) return 'Link a wallet to send gifts';
-  if (artwork.owner_pubkey === me.usernode_pubkey) return "You can't gift your own artwork";
-  if (artwork.owner_user_id != null && me.id != null && artwork.owner_user_id === me.id) {
-    return "You can't gift your own artwork";
-  }
-  return null;
-}
-
-// Download the generated artwork via the auth-gated server proxy, which
-// streams the remote image back with a Content-Disposition filename.
-async function downloadArtwork(sessionId, btn) {
-  if (!sessionId) return;
-  const original = btn ? btn.innerHTML : null;
-  if (btn) { btn.disabled = true; btn.innerHTML = '⬇️ Downloading…'; }
+// ─── Identity ─────────────────────────────────────────────────────────────────
+async function loadMe() {
   try {
-    const res = await fetch(`/api/session/${sessionId}/image/download`, { headers: { 'x-usernode-token': token } });
-    if (!res.ok) {
-      let msg = 'Download failed';
-      try { msg = (await res.json()).error || msg; } catch {}
-      throw new Error(msg);
-    }
-    const blob = await res.blob();
-    const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `artwork-${sessionId}.jpg`;
-    // Server proxies the artwork as a high-resolution JPEG.
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (err) {
-    alert(err.message || 'Download failed');
-  } finally {
-    if (btn && original !== null) { btn.disabled = false; btn.innerHTML = original; }
-  }
-}
-
-// ─── Sharing ──────────────────────────────────────────────────────────────────
-// Public share URL for an artwork. The app runs on its own subdomain inside
-// the iframe, so location.origin already equals the public origin that serves
-// the /a/:id landing page.
-function shareUrlFor(id) { return `${location.origin}/a/${id}`; }
-
-// Markup for the per-artwork share controls (copy link / X / Facebook). Title
-// is HTML-escaped for the attribute; dataset reads it back as the raw string.
-function shareButtonsHtml(id, title) {
-  const t = esc(title || '');
-  return `
-    <button type="button" class="pill" data-share-copy="${esc(id)}" title="Copy link">🔗 <span class="share-copy-label">Copy link</span></button>
-    <button type="button" class="pill" data-share-x="${esc(id)}" data-share-title="${t}" title="Share on X" aria-label="Share on X">𝕏</button>
-    <button type="button" class="pill" data-share-fb="${esc(id)}" title="Share on Facebook" aria-label="Share on Facebook">f</button>`;
-}
-
-async function copyShareLink(id, btn) {
-  const url = shareUrlFor(id);
-  let ok = false;
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(url);
-      ok = true;
-    }
-  } catch { /* fall through to execCommand fallback (sandboxed iframe) */ }
-  if (!ok) {
-    try {
-      const inp = document.createElement('input');
-      inp.value = url;
-      inp.style.position = 'fixed';
-      inp.style.opacity = '0';
-      document.body.appendChild(inp);
-      inp.focus(); inp.select();
-      ok = document.execCommand('copy');
-      inp.remove();
-    } catch { /* clipboard genuinely unavailable */ }
-  }
-  if (btn) {
-    const label = btn.querySelector('.share-copy-label');
-    if (label) {
-      const prev = label.dataset.prev || label.textContent;
-      label.dataset.prev = prev;
-      label.textContent = ok ? 'Copied!' : 'Copy failed';
-      clearTimeout(btn._copyTimer);
-      btn._copyTimer = setTimeout(() => { label.textContent = prev; }, 1600);
-    }
-  }
-}
-
-function shareToX(id, title) {
-  const text = (title ? `${title} — Artwork` : 'Check out this artwork') + ' 🎨';
-  const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrlFor(id))}`;
-  window.open(intent, '_blank', 'noopener,noreferrer');
-}
-
-function shareToFacebook(id) {
-  const intent = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrlFor(id))}`;
-  window.open(intent, '_blank', 'noopener,noreferrer');
-}
-
-// ─── Lightbox ─────────────────────────────────────────────────────────────────
-let _lbEscHandler = null;
-
-function openLightbox(src) {
-  const lb  = document.getElementById('lightbox');
-  const img = document.getElementById('lightbox-img');
-  img.src = src;
-  img.classList.remove('lb-zoomed');
-  img.style.cursor = 'zoom-in';
-  lb.scrollTop = 0;
-  lb.classList.add('lb-open');
-  document.body.style.overflow = 'hidden';
-  document.getElementById('lightbox-close').focus();
-  _lbEscHandler = e => { if (e.key === 'Escape') closeLightbox(); };
-  document.addEventListener('keydown', _lbEscHandler);
-}
-
-function closeLightbox() {
-  document.getElementById('lightbox').classList.remove('lb-open');
-  document.body.style.overflow = '';
-  if (_lbEscHandler) {
-    document.removeEventListener('keydown', _lbEscHandler);
-    _lbEscHandler = null;
-  }
-}
-
-function initLightbox() {
-  document.getElementById('lv-artwork').addEventListener('click', () => {
-    const src = document.getElementById('lv-artwork').src;
-    if (src) openLightbox(src);
-  });
-  document.getElementById('lightbox').addEventListener('click', e => {
-    if (!e.target.closest('#lightbox-img') && !e.target.closest('#lightbox-close')) closeLightbox();
-  });
-  document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
-  document.getElementById('lightbox-img').addEventListener('click', e => {
-    e.stopPropagation();
-    const img = e.currentTarget;
-    const zoomed = img.classList.toggle('lb-zoomed');
-    img.style.cursor = zoomed ? 'zoom-out' : 'zoom-in';
-  });
-}
-
-function filenameFromDisposition(header) {
-  if (!header) return null;
-  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  return m ? decodeURIComponent(m[1]) : null;
-}
-
-async function renderArchive() {
-  try {
-    const { sessions } = await api('GET', '/api/sessions/locked');
-    const el = document.getElementById('archive-list');
-    if (!sessions.length) {
-      el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
-      applyArchiveCols(); return;
-    }
-    el.innerHTML = sessions.map(s => {
-      const words = (s.words || '').split(',').filter(Boolean);
-      const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
-      return `
-        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
-          <div class="p-4">
-            <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
-            <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
-            ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
-            <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
-            ${(() => {
-              const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
-              const giftTotal = Number(s.gift_total || 0);
-              const ownerName = s.owner_username || s.winner_username || '';
-              return `<div class="flex flex-wrap items-center gap-2 mt-3">
-              <button type="button" data-like-session="${esc(s.id)}"
-                class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
-                <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
-                <span class="like-count tabular-nums">${s.like_count || 0}</span>
-              </button>
-              <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
-                data-gift-session="${esc(s.id)}"
-                data-owner-pubkey="${esc(s.owner_pubkey || '')}"
-                data-owner-name="${esc(ownerName)}"
-                ${giftReason ? 'disabled' : ''}
-                title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
-                <span>🎁</span>
-                <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
-              </button>
-              ${shareButtonsHtml(s.id, s.name)}
-              ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
-            </div>`;
-            })()}
-          </div>
-        </div>`;
-    }).join('');
-    el.querySelectorAll('button[data-download]').forEach(btn => {
-      btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
-    });
-    applyArchiveCols();
-  } catch (err) { console.error('archive error:', err); }
-}
-
-function esc(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ─── Gifts (on-chain tips, NOT in-app credits) ─────────────────────────────────
-let giftCtx = null; // { sessionId, ownerName, ownerPubkey, onSuccess }
-
-// Compact display of a per-artwork gift total (e.g. 1.5, or 0 when none yet).
-function formatGiftTotal(n) {
-  const v = Number(n) || 0;
-  if (!v) return '0';
-  return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(4)));
-}
-
-function truncateAddr(addr) {
-  if (!addr) return '';
-  return addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-4)}` : addr;
-}
-
-// The centrally-hosted bridge may expose itself under a few names; resolve
-// whichever object provides the wallet API. Returns null if unavailable
-// (e.g. local dev without SV reachable).
-function getBridge() {
-  const candidates = [window.UsernodeBridge, window.usernodeBridge, window.usernode, window.bridge];
-  for (const c of candidates) {
-    if (c && typeof c.sendTransaction === 'function' && typeof c.getNodeAddress === 'function') return c;
-  }
-  return null;
-}
-
-function openGiftModal(ctx) {
-  giftCtx = ctx;
-  document.getElementById('gift-owner-name').textContent = ctx.ownerName || '';
-  document.getElementById('gift-owner-addr').textContent = truncateAddr(ctx.ownerPubkey);
-  document.getElementById('gift-amount').value = '';
-  const err = document.getElementById('gift-error');
-  err.classList.add('hidden'); err.textContent = '';
-  document.getElementById('gift-staging-banner').classList.toggle('hidden', !(me && me.isStaging));
-  const submit = document.getElementById('gift-submit');
-  submit.disabled = false; submit.textContent = 'Send Gift';
-  document.getElementById('gift-modal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('gift-amount').focus(), 50);
-}
-
-function closeGiftModal() {
-  document.getElementById('gift-modal').classList.add('hidden');
-  giftCtx = null;
-}
-
-function giftError(msg) {
-  const err = document.getElementById('gift-error');
-  err.textContent = msg;
-  err.classList.remove('hidden');
-}
-
-async function submitGift() {
-  if (!giftCtx) return;
-  const submit = document.getElementById('gift-submit');
-  const err = document.getElementById('gift-error');
-  err.classList.add('hidden');
-
-  const amount = Number(document.getElementById('gift-amount').value);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return giftError('Enter a positive amount.');
-  }
-
-  const ownerPubkey = giftCtx.ownerPubkey;
-  if (!ownerPubkey) return giftError("This creator hasn't linked a wallet yet.");
-  if (me && me.usernode_pubkey && me.usernode_pubkey === ownerPubkey) {
-    return giftError("You can't gift your own artwork.");
-  }
-
-  submit.disabled = true; submit.textContent = 'Sending…';
-  try {
-    let txHash, chainId;
-
-    if (me && me.isStaging) {
-      // Staging: no real funds move. Synthesize a tx hash so the gift still
-      // records and totals populate for demos.
-      txHash = 'staging-' + giftCtx.sessionId + '-' + Date.now();
-      chainId = 'staging';
-    } else {
-      const bridge = getBridge();
-      if (!bridge) throw new Error('Wallet features are unavailable right now. Try again shortly.');
-
-      const senderAddr = await bridge.getNodeAddress();
-      if (!senderAddr) throw new Error('No wallet linked. Link a wallet to send gifts.');
-      if (senderAddr === ownerPubkey) throw new Error("You can't gift your own artwork.");
-
-      const result = await bridge.sendTransaction({ to: ownerPubkey, amount });
-      txHash = (result && (result.txHash || result.hash || result.tx_hash)) || result;
-      chainId = bridge.chain_id || (result && result.chainId) || null;
-      if (!txHash) throw new Error('Transaction did not complete.');
-    }
-
-    const data = await api('POST', `/api/session/${giftCtx.sessionId}/gift`, {
-      amount, txHash, toPubkey: ownerPubkey, chainId
-    });
-
-    const newTotal = Number(data.giftTotal || 0);
-    updateGiftBadge(giftCtx.sessionId, newTotal);
-    if (typeof giftCtx.onSuccess === 'function') giftCtx.onSuccess(newTotal);
-    closeGiftModal();
+    me = await api('GET', '/api/me');
   } catch (e) {
-    giftError(e.message || 'Gift failed.');
-    submit.disabled = false; submit.textContent = 'Send Gift';
+    console.warn('me load failed:', e.message);
+    return;
   }
+  if (!me) return;
+  const handle = me.username ? `@${me.username}` : '';
+  const nameEl = document.getElementById('username-display');
+  if (nameEl) nameEl.textContent = handle;
+  const profEl = document.getElementById('profile-name');
+  if (profEl && handle) profEl.textContent = handle;
+  if (me.isStaging) document.getElementById('staging-badge').classList.remove('hidden');
 }
 
-// Reflect a new gift total on any visible archive card for this session.
-function updateGiftBadge(sessionId, total) {
-  const btn = document.querySelector(`.gift-btn[data-gift-session="${sessionId}"]`);
-  if (btn) {
-    const totalEl = btn.querySelector('.gift-total');
-    if (totalEl) totalEl.textContent = formatGiftTotal(total);
-  }
-}
-
-// ─── Sharing utilities (network share dialogs) ────────────────────────────────
-// Build descriptive share text from an artwork's name + its 10 words.
-// `artwork.words` may be an array (locked view) or a comma string (archive).
-function buildShareText(artwork) {
-  const name = (artwork.name || 'Untitled').trim();
-  const words = Array.isArray(artwork.words)
-    ? artwork.words
-    : String(artwork.words || '').split(',');
-  const wordList = words.map(w => w.trim()).filter(Boolean).join(', ');
-  let text = `"${name}" — AI artwork from 10 words`;
-  if (wordList) text += `: ${wordList}`;
-  text += ' · Made on Artwork Workspace';
-  return text;
-}
-
-// Build network share-dialog URLs from the artwork's PUBLIC image URL.
-// Never share location.href / the ?token= param — that would leak the JWT.
-function shareUrls(imageUrl, text) {
-  const u = encodeURIComponent(imageUrl);
-  return {
-    // Facebook's sharer.php only honors the `u` (URL) param; text is ignored.
-    twitter: `https://twitter.com/intent/tweet?url=${u}&text=${encodeURIComponent(text)}`,
-    facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
-  };
-}
-
-function openShare(network, imageUrl, text) {
-  if (!imageUrl) return;
-  const urls = shareUrls(imageUrl, text);
-  const url = urls[network];
-  if (url) window.open(url, '_blank', 'noopener,noreferrer');
-}
-
-// ─── Actions ──────────────────────────────────────────────────────────────────
-async function handleBid() {
-  const input = document.getElementById('bid-input');
-  if (!input) return;
-  const amount = parseInt(input.value);
-  if (!amount || amount < 1) return;
-  const btn = document.getElementById('bid-btn');
-  btn.disabled = true; btn.textContent = 'Placing…';
-  try {
-    const data = await api('POST', '/api/bid', { sessionId: activeSession.id, amount });
-    if (me) { me.credits = data.credits; renderHeader(); }
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = activeSession.state === 'active' ? 'Bid' : 'Outbid';
-    alert(err.message);
-  }
-}
-
-async function handleGenerate() {
-  const btn = document.getElementById('generate-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
-  try {
-    await api('POST', '/api/generate', { sessionId: activeSession.id });
-  } catch (err) {
-    if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
-    alert(err.message);
-  }
-}
-
-async function handleLike(btn) {
-  const sessionId = parseInt(btn.dataset.likeSession);
-  if (!sessionId || btn.disabled) return;
-
-  const iconEl  = btn.querySelector('.like-icon');
-  const countEl = btn.querySelector('.like-count');
-
-  // Optimistic toggle
-  const wasLiked = iconEl.textContent === '❤️';
-  const prevCount = parseInt(countEl.textContent) || 0;
-  applyLikeState(btn, !wasLiked, prevCount + (wasLiked ? -1 : 1));
-
-  btn.disabled = true;
-  try {
-    const data = await api('POST', `/api/session/${sessionId}/like`, {});
-    applyLikeState(btn, data.liked, data.likeCount);
-  } catch (err) {
-    applyLikeState(btn, wasLiked, prevCount); // revert
-    alert(err.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-function applyLikeState(btn, liked, count) {
-  const iconEl  = btn.querySelector('.like-icon');
-  const countEl = btn.querySelector('.like-count');
-  iconEl.textContent  = liked ? '❤️' : '🤍';
-  countEl.textContent = count;
-  btn.className = 'like-btn pill ' +
-    (liked ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : '');
-}
-
-// ─── Word edit modal ──────────────────────────────────────────────────────────
-function openWordModal(index, currentWord) {
-  if (!activeSession) return;
-  wordEditIndex = index;
-
-  const currentBid = parseInt(activeSession.current_bid) || 0;
-  const minBid     = currentBid ? Math.ceil(currentBid * 1.01) : 1;
-
-  document.getElementById('wm-current').textContent  = currentWord;
-  document.getElementById('wm-word').value           = currentWord;
-  document.getElementById('wm-bid').value            = minBid;
-  document.getElementById('wm-bid').min              = minBid;
-  document.getElementById('wm-credits').textContent  = me ? me.credits : '?';
-  document.getElementById('wm-error').classList.add('hidden');
-  document.getElementById('word-modal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('wm-word').focus(), 50);
-}
-
-function closeWordModal() {
-  document.getElementById('word-modal').classList.add('hidden');
-  wordEditIndex = -1;
-}
-
-async function submitWordChange() {
-  const newWord  = document.getElementById('wm-word').value.trim();
-  const bidAmount = parseInt(document.getElementById('wm-bid').value);
-  const errEl    = document.getElementById('wm-error');
-  const submitBtn = document.getElementById('wm-submit');
-
-  errEl.classList.add('hidden');
-  if (!newWord) { errEl.textContent = 'Word cannot be empty.'; errEl.classList.remove('hidden'); return; }
-  if (newWord.length > 30) { errEl.textContent = 'Word must be 30 characters or fewer.'; errEl.classList.remove('hidden'); return; }
-  if (!bidAmount || bidAmount < 1) { errEl.textContent = 'Enter a valid bid amount.'; errEl.classList.remove('hidden'); return; }
-
-  submitBtn.disabled = true; submitBtn.textContent = 'Submitting…';
-  try {
-    const data = await api('POST', `/api/session/${activeSession.id}/change-word`, {
-      wordIndex: wordEditIndex,
-      newWord,
-      bidAmount
-    });
-    if (me) { me.credits = data.newBalance; renderHeader(); }
-    closeWordModal();
-  } catch (err) {
-    errEl.textContent = err.message;
-    errEl.classList.remove('hidden');
-    submitBtn.disabled = false; submitBtn.textContent = 'Change & Bid';
-  }
-}
-
-// ─── Socket ───────────────────────────────────────────────────────────────────
+// ─── Realtime (per-user room; used by later phases for notifications) ───────────
 function initSocket() {
-  socket = io({ auth: { token } });
-
-  socket.on('connect', () => {
-    if (activeSession) socket.emit('join-session', activeSession.id);
-  });
-
-  socket.on('session-created', ({ session }) => {
-    activeSession = session; auctionEnded = false;
-    socket.emit('join-session', session.id);
-    renderHeader(); renderMain();
-  });
-
-  socket.on('bid-placed', data => {
-    if (!activeSession || activeSession.id !== data.sessionId) return;
-    Object.assign(activeSession, {
-      state: 'auction',
-      current_bid: data.amount,
-      current_leader_user_id: data.userId,
-      current_leader_username: data.username,
-      expires_at: data.expiresAt,
-      _remaining: 30
+  if (typeof io !== 'function' || !token) return;
+  try {
+    socket = io({ auth: { token } });
+    socket.on('connect', () => {
+      if (me && me.id != null) socket.emit('join-user', me.id);
     });
-    auctionEnded = false;
-    renderMain();
-  });
-
-  socket.on('word-changed', data => {
-    if (!activeSession || activeSession.id !== data.sessionId) return;
-    activeSession.words = data.words.join(',');
-    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
-    renderWordChips(document.getElementById('word-chips'), data.words, editable);
-  });
-
-  socket.on('auction-tick', ({ remaining }) => {
-    if (!activeSession || activeSession.state !== 'auction') return;
-    updateCountdown(remaining);
-  });
-
-  socket.on('auction-ended', data => {
-    if (!activeSession || activeSession.id !== data.sessionId) return;
-    auctionEnded = true; activeSession._remaining = 0;
-    renderAuctionPanel();
-  });
-
-  socket.on('session-locked', async data => {
-    if (activeSession && activeSession.id === data.sessionId) {
-      lockedSessionData = {
-        ...activeSession,
-        image_url: data.imageUrl,
-        prompt: data.prompt,
-        winner_username: data.winnerUsername,
-        owner_username: data.winnerUsername,
-        owner_user_id: data.ownerUserId,
-        owner_pubkey: data.ownerPubkey,
-        gift_total: 0,
-        words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
-      };
-      activeSession = null; auctionEnded = false;
-    }
-    renderHeader(); renderMain();
-    if (lockedSessionData) {
-      renderLockedView(lockedSessionData);
-      document.getElementById('locked-view').classList.remove('hidden');
-    }
-    renderArchive();
-  });
-}
-
-// ─── New Session Modal ────────────────────────────────────────────────────────
-function initModal() {
-  const btn      = document.getElementById('new-session-btn');
-  const modal    = document.getElementById('modal');
-  const cancel   = document.getElementById('modal-cancel');
-  const create   = document.getElementById('modal-create');
-  const nameInp  = document.getElementById('modal-name');
-  const wordsInp = document.getElementById('modal-words');
-  const countEl  = document.getElementById('modal-word-count');
-  const errEl    = document.getElementById('modal-error');
-
-  function updateWordCount() {
-    const words = parseInputWords(wordsInp.value);
-    const count = words.length;
-    countEl.textContent = `${count} / 10`;
-    countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
-      (count === 10 ? 'text-emerald-400' : 'text-zinc-500');
-    create.disabled = !(nameInp.value.trim() && count === 10);
+    socket.on('connect_error', (err) => console.warn('socket error:', err && err.message));
+  } catch (e) {
+    console.warn('socket init failed:', e.message);
   }
-
-  wordsInp.addEventListener('input', updateWordCount);
-  nameInp.addEventListener('input', updateWordCount);
-
-  btn.addEventListener('click', () => {
-    nameInp.value = ''; wordsInp.value = '';
-    updateWordCount();
-    errEl.classList.add('hidden');
-    modal.classList.remove('hidden');
-    setTimeout(() => nameInp.focus(), 50);
-  });
-  cancel.addEventListener('click', () => modal.classList.add('hidden'));
-  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
-
-  async function doCreate() {
-    const name  = nameInp.value.trim();
-    const words = parseInputWords(wordsInp.value);
-    if (!name) { errEl.textContent = 'Please enter a session name.'; errEl.classList.remove('hidden'); return; }
-    if (words.length !== 10) { errEl.textContent = 'Please enter exactly 10 words.'; errEl.classList.remove('hidden'); return; }
-    create.disabled = true; create.textContent = 'Creating…'; errEl.classList.add('hidden');
-    try {
-      const { session } = await api('POST', '/api/session', { name, words });
-      activeSession = session; auctionEnded = false;
-      modal.classList.add('hidden');
-      renderHeader(); renderMain();
-      socket.emit('join-session', session.id);
-    } catch (err) {
-      errEl.textContent = err.message; errEl.classList.remove('hidden');
-    } finally { create.disabled = false; create.textContent = 'Create'; updateWordCount(); }
-  }
-  create.addEventListener('click', doCreate);
-  nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') wordsInp.focus(); });
-  wordsInp.addEventListener('keydown', e => { if (e.key === 'Enter') doCreate(); });
 }
 
-// ─── Word Edit Modal init ─────────────────────────────────────────────────────
-function initWordModal() {
-  document.getElementById('wm-cancel').addEventListener('click', closeWordModal);
-  document.getElementById('word-modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('word-modal')) closeWordModal();
-  });
-  document.getElementById('wm-submit').addEventListener('click', submitWordChange);
-  document.getElementById('wm-word').addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('wm-bid').focus();
-  });
-  document.getElementById('wm-bid').addEventListener('keydown', e => {
-    if (e.key === 'Enter') submitWordChange();
-  });
-}
-
-// ─── Gift Modal init ──────────────────────────────────────────────────────────
-function initGiftModal() {
-  document.getElementById('gift-cancel').addEventListener('click', closeGiftModal);
-  document.getElementById('gift-modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('gift-modal')) closeGiftModal();
-  });
-  document.getElementById('gift-submit').addEventListener('click', submitGift);
-  document.getElementById('gift-amount').addEventListener('keydown', e => {
-    if (e.key === 'Enter') submitGift();
+// ─── Service worker ─────────────────────────────────────────────────────────────
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .catch((err) => console.warn('SW registration failed:', err && err.message));
   });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  initModal();
-  initWordModal();
-  initLightbox();
+  if (!location.hash) location.replace('#feed');
+  renderRoute();
+  registerServiceWorker();
+  await loadMe();
   initSocket();
-
-  document.getElementById('archive-list').addEventListener('click', e => {
-    if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
-    const sb = e.target.closest('.share-btn');
-    if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
-    const likeBtn = e.target.closest('.like-btn');
-    if (likeBtn) { handleLike(likeBtn); return; }
-    const giftBtn = e.target.closest('.gift-btn');
-    if (giftBtn && !giftBtn.disabled) {
-      openGiftModal({
-        sessionId: parseInt(giftBtn.dataset.giftSession),
-        ownerName: giftBtn.dataset.ownerName || '',
-        ownerPubkey: giftBtn.dataset.ownerPubkey || ''
-      });
-    }
-  });
-
-  initGiftModal();
-
-  // Landing-screen CTA — opens the same New Session flow as the header button.
-  document.getElementById('cta-create-artwork').addEventListener('click', () => {
-    const headerBtn = document.getElementById('new-session-btn');
-    if (!headerBtn.disabled) headerBtn.click();
-  });
-
-  // Share controls live in both the locked view and archive cards — handle
-  // them with one delegated listener.
-  document.addEventListener('click', e => {
-    const copyBtn = e.target.closest('[data-share-copy]');
-    if (copyBtn) { copyShareLink(parseInt(copyBtn.dataset.shareCopy), copyBtn); return; }
-    const xBtn = e.target.closest('[data-share-x]');
-    if (xBtn) { shareToX(parseInt(xBtn.dataset.shareX), xBtn.dataset.shareTitle); return; }
-    const fbBtn = e.target.closest('[data-share-fb]');
-    if (fbBtn) { shareToFacebook(parseInt(fbBtn.dataset.shareFb)); return; }
-  });
-
-  loadArchiveCols();
-  document.getElementById('archive-cols-group').addEventListener('click', e => {
-    const btn = e.target.closest('button[data-archive-col]');
-    if (btn) setArchiveCols(btn.getAttribute('data-archive-col'));
-  });
-  window.addEventListener('resize', onArchiveResize);
-  applyArchiveCols();
-
-  try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
-
-  try {
-    const { session } = await api('GET', '/api/session/active');
-    activeSession = session;
-    if (activeSession) {
-      socket.emit('join-session', activeSession.id);
-      if (activeSession.state === 'auction' && activeSession.expires_at) {
-        if (new Date(activeSession.expires_at) < new Date()) {
-          auctionEnded = true;
-        } else {
-          activeSession._remaining = Math.max(0, Math.ceil((new Date(activeSession.expires_at) - Date.now()) / 1000));
-        }
-      }
-    }
-  } catch(e) { console.error('session error:', e); }
-
-  renderHeader();
-  renderMain();
-  renderArchive();
 }
 
 init();

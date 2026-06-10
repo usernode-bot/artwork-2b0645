@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#7c3aed">
+  <title>Offline · Art Work</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#09090b;color:#fafafa;
+      margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{max-width:22rem;text-align:center}
+    .mark{font-size:3rem;margin-bottom:.75rem}
+    h1{font-size:1.25rem;font-weight:700;margin:0 0 .5rem}
+    p{color:#a1a1aa;font-size:.9rem;margin:0 0 1.5rem;line-height:1.5}
+    button{display:inline-block;padding:.6rem 1.2rem;background:#7c3aed;color:#fff;border:none;
+      border-radius:.6rem;font-size:.9rem;font-weight:600;cursor:pointer;transition:background .12s}
+    button:hover{background:#8b5cf6}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark">🎨</div>
+    <h1>You're offline</h1>
+    <p>Art Work needs a connection to load fresh artwork. Reconnect and try again.</p>
+    <button onclick="location.reload()">Retry</button>
+  </div>
+</body>
+</html>
