@@ -102,9 +102,78 @@ async function ensureUserCredits(userId, username) {
   );
 }
 
+// Curated, seeded category list for the Art Work platform. Slugs are stable
+// identifiers; names are display labels. Seeded idempotently on boot.
+const ART_CATEGORIES = [
+  { slug: 'painting',     name: 'Painting' },
+  { slug: 'illustration', name: 'Illustration' },
+  { slug: 'digital-art',  name: 'Digital Art' },
+  { slug: 'photography',  name: 'Photography' },
+  { slug: 'sculpture',    name: 'Sculpture' },
+  { slug: 'mixed-media',  name: 'Mixed Media' },
+  { slug: 'other',        name: 'Other' },
+];
+
+// Upsert a profile row on first authenticated hit (mirrors ensureUserCredits).
+// display_name defaults to the username and can be edited later (Phase 5).
+async function ensureProfile(userId, username) {
+  await pool.query(
+    `INSERT INTO profiles (user_id, username, display_name)
+     VALUES ($1, $2, $2)
+     ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username`,
+    [userId, username]
+  );
+}
+
+// Accepted upload image mime types and server-side byte ceiling. The client
+// downscales/compresses to ~2 MB; this is a hard backstop (base64 of a 2 MB
+// image is ~2.7 MB, comfortably under the 5 MB express.json limit).
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+// Parse a data URL ("data:image/jpeg;base64,…") or a {base64, mime} pair into
+// a { buffer, mime } pair. Returns null on anything malformed.
+function parseImagePayload(image) {
+  try {
+    let mime, b64;
+    if (typeof image === 'string') {
+      const m = /^data:([a-zA-Z0-9.+/-]+);base64,(.+)$/s.exec(image.trim());
+      if (!m) return null;
+      mime = m[1].toLowerCase();
+      b64 = m[2];
+    } else if (image && typeof image === 'object') {
+      mime = String(image.mime || '').toLowerCase();
+      b64 = String(image.base64 || '').replace(/^data:[^,]+,/, '');
+    } else {
+      return null;
+    }
+    if (!ALLOWED_IMAGE_MIME.has(mime)) return null;
+    const buffer = Buffer.from(b64, 'base64');
+    if (!buffer.length) return null;
+    return { buffer, mime };
+  } catch {
+    return null;
+  }
+}
+
 function parseWords(input) {
   if (Array.isArray(input)) return input.map(w => String(w).trim()).filter(Boolean);
   return String(input || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
+}
+
+// Normalize a client-supplied tag list into ≤8 trimmed, de-duped strings.
+function normalizeTags(input) {
+  let arr = [];
+  if (Array.isArray(input)) arr = input;
+  else if (typeof input === 'string') arr = input.split(',');
+  const seen = new Set();
+  const out = [];
+  for (const t of arr) {
+    const tag = String(t || '').trim().replace(/^#/, '').slice(0, 30);
+    if (tag && !seen.has(tag.toLowerCase())) { seen.add(tag.toLowerCase()); out.push(tag); }
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -112,16 +181,165 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.get('/api/me', async (req, res) => {
   try {
+    await ensureProfile(req.user.id, req.user.username);
     await ensureUserCredits(req.user.id, req.user.username);
-    const { rows } = await pool.query('SELECT balance FROM user_credits WHERE user_id = $1', [req.user.id]);
+    const { rows } = await pool.query(
+      `SELECT p.display_name, p.bio, p.avatar_image_id,
+              (SELECT COUNT(*)::int FROM artworks a WHERE a.owner_user_id = p.user_id) AS artwork_count
+       FROM profiles p WHERE p.user_id = $1`,
+      [req.user.id]
+    );
+    const profile = rows[0] || {};
     res.json({
       id: req.user.id,
       username: req.user.username,
-      credits: rows[0]?.balance ?? 1000,
+      display_name: profile.display_name || req.user.username,
+      bio: profile.bio || '',
+      avatar_image_id: profile.avatar_image_id ?? null,
+      artwork_count: profile.artwork_count ?? 0,
       // On-chain wallet address (ut1…) or null if the user hasn't linked one.
-      // Distinct from `credits`, which is the in-app bidding balance.
       usernode_pubkey: req.user.usernode_pubkey ?? null,
       isStaging: IS_STAGING
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Art Work: categories ───────────────────────────────────────────────────
+app.get('/api/categories', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, slug, name FROM categories ORDER BY sort_order ASC, id ASC`
+    );
+    res.json({ categories: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Art Work: create an artwork (upload OR drawing) ──────────────────────────
+// Accepts a client-compressed image (data URL or {base64, mime}) plus metadata.
+// Stores the binary in `images` and the metadata in `artworks` (one image per
+// artwork). Drawings and uploads use this same path — a drawing is just a
+// canvas exported via toBlob and sent here.
+app.post('/api/artwork', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { title, description, categoryId, categorySlug, tags, image, width, height } = req.body || {};
+
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle) return res.status(400).json({ error: 'Title is required' });
+    if (cleanTitle.length > 120) return res.status(400).json({ error: 'Title must be 120 characters or fewer' });
+
+    const cleanDesc = String(description || '').trim().slice(0, 2000);
+
+    const parsed = parseImagePayload(image);
+    if (!parsed) return res.status(400).json({ error: 'A valid image (JPEG, PNG or WebP) is required' });
+    if (parsed.buffer.length > MAX_IMAGE_BYTES) {
+      return res.status(413).json({ error: 'Image is too large — keep it under 4 MB' });
+    }
+
+    // Resolve category: explicit id, then slug, else fall back to "Other".
+    let resolvedCategoryId = null;
+    if (categoryId != null && Number.isFinite(Number(categoryId))) {
+      const { rows } = await client.query('SELECT id FROM categories WHERE id = $1', [Number(categoryId)]);
+      if (rows.length) resolvedCategoryId = rows[0].id;
+    }
+    if (resolvedCategoryId == null) {
+      const slug = String(categorySlug || 'other').trim() || 'other';
+      const { rows } = await client.query(
+        `SELECT id FROM categories WHERE slug = $1
+         UNION ALL SELECT id FROM categories WHERE slug = 'other'
+         LIMIT 1`,
+        [slug]
+      );
+      resolvedCategoryId = rows[0]?.id ?? null;
+    }
+
+    const w = Number.isFinite(Number(width)) ? Math.round(Number(width)) : null;
+    const h = Number.isFinite(Number(height)) ? Math.round(Number(height)) : null;
+    const cleanTags = normalizeTags(tags);
+
+    await client.query('BEGIN');
+    const { rows: imgRows } = await client.query(
+      `INSERT INTO images (owner_user_id, bytes, mime, width, height, byte_size)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [req.user.id, parsed.buffer, parsed.mime, w, h, parsed.buffer.length]
+    );
+    const imageId = imgRows[0].id;
+
+    const { rows: artRows } = await client.query(
+      `INSERT INTO artworks (owner_user_id, owner_username, title, description, category_id, image_id, tags)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, title, description, category_id, image_id, tags, created_at`,
+      [req.user.id, req.user.username, cleanTitle, cleanDesc, resolvedCategoryId, imageId, cleanTags]
+    );
+    await client.query('COMMIT');
+
+    const artwork = artRows[0];
+    res.json({
+      artwork: {
+        ...artwork,
+        owner_username: req.user.username,
+        image_url: `/api/artwork/${artwork.id}/image`
+      }
+    });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ─── Art Work: serve an artwork's image bytes ─────────────────────────────────
+// Bytes are immutable per artwork id, so we send a long-lived, immutable cache
+// header plus a stable ETag and honour conditional requests with a 304.
+app.get('/api/artwork/:id/image', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid artwork id' });
+
+    const { rows } = await pool.query(
+      `SELECT i.bytes, i.mime, i.byte_size, i.id AS image_id
+       FROM artworks a JOIN images i ON i.id = a.image_id
+       WHERE a.id = $1`,
+      [id]
+    );
+    const img = rows[0];
+    if (!img) return res.status(404).json({ error: 'Image not found' });
+
+    const etag = `"aw-${img.image_id}"`;
+    if (req.headers['if-none-match'] === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader('Content-Type', img.mime || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('ETag', etag);
+    res.setHeader('Content-Length', img.byte_size ?? img.bytes.length);
+    res.send(img.bytes);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Art Work: list the signed-in user's own artworks (My Artwork grid) ───────
+app.get('/api/artworks/mine', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT a.id, a.title, a.description, a.tags, a.view_count, a.created_at,
+              c.slug AS category_slug, c.name AS category_name
+       FROM artworks a
+       LEFT JOIN categories c ON c.id = a.category_id
+       WHERE a.owner_user_id = $1
+       ORDER BY a.created_at DESC, a.id DESC
+       LIMIT 200`,
+      [req.user.id]
+    );
+    res.json({
+      artworks: rows.map(r => ({ ...r, image_url: `/api/artwork/${r.id}/image` }))
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -957,6 +1175,75 @@ async function start() {
       UNIQUE (session_id, user_id)
     )
   `);
+
+  // ─── Art Work platform schema (Phase 1) ────────────────────────────────────
+  // All public by default — public profiles, reference categories, shared
+  // artwork and the binaries behind them. No FK points at a private table.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id SERIAL PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  // Seed / refresh the curated category list idempotently.
+  for (let i = 0; i < ART_CATEGORIES.length; i++) {
+    const c = ART_CATEGORIES[i];
+    await pool.query(
+      `INSERT INTO categories (slug, name, sort_order) VALUES ($1, $2, $3)
+       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, sort_order = EXCLUDED.sort_order`,
+      [c.slug, c.name, i]
+    );
+  }
+
+  // Uploaded/drawn image binaries, stored directly in Postgres (no object
+  // store on the platform). Served via GET /api/artwork/:id/image.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS images (
+      id SERIAL PRIMARY KEY,
+      owner_user_id INTEGER NOT NULL,
+      bytes BYTEA NOT NULL,
+      mime TEXT NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      byte_size INTEGER,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  // Public profiles. avatar_image_id references the public images table.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL UNIQUE,
+      username VARCHAR(255) NOT NULL,
+      display_name VARCHAR(255),
+      bio TEXT,
+      avatar_image_id INTEGER REFERENCES images(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  // First-class artworks (uploads and drawings alike).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artworks (
+      id SERIAL PRIMARY KEY,
+      owner_user_id INTEGER NOT NULL,
+      owner_username VARCHAR(255) NOT NULL,
+      title VARCHAR(160) NOT NULL,
+      description TEXT,
+      category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+      image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+      tags TEXT[] NOT NULL DEFAULT '{}',
+      view_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`ALTER TABLE artworks ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_artworks_owner ON artworks (owner_user_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_artworks_recent ON artworks (created_at DESC, id DESC)`);
 
   // Resume active auction if server restarted
   const { rows: activeAuctions } = await pool.query(`

@@ -175,7 +175,29 @@
       border: 1px dashed #3f3f46; background: #18181b; border-radius: 16px;
       padding: 40px 24px; text-align: center; color: #71717a;
     }
-  </style>
+
+    /* ── Create screen ───────────────────────────────────────────────── */
+    .create-mode-btn { color: #a1a1aa; transition: background 0.12s, color 0.12s; }
+    .create-mode-btn.active { background: var(--accent); color: #fff; }
+    .brush-type {
+      padding: 4px 10px; border-radius: 7px; font-size: 0.78rem; font-weight: 600;
+      color: #a1a1aa; transition: background 0.12s, color 0.12s; cursor: pointer;
+    }
+    .brush-type.active { background: var(--accent); color: #fff; }
+    .swatch {
+      width: 20px; height: 20px; border-radius: 9999px; cursor: pointer;
+      border: 2px solid transparent; box-shadow: 0 0 0 1px #3f3f46;
+    }
+    .swatch.active { border-color: #fff; }
+    #draw-canvas { cursor: crosshair; touch-action: none; }
+
+    .art-card {
+      background: #18181b; border: 1px solid #27272a; border-radius: 12px;
+      overflow: hidden; transition: border-color 0.12s;
+    }
+    .art-card:hover { border-color: #3f3f46; }
+    .art-card img { width: 100%; aspect-ratio: 1/1; object-fit: cover; background: #27272a; display: block; }
+</style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen">
 
@@ -235,14 +257,107 @@
       </div>
     </section>
 
-    <!-- Upload -->
+    <!-- Create (Upload or Draw) -->
     <section id="view-upload" class="view py-5">
-      <h2 class="text-xl font-bold mb-4">Upload</h2>
-      <div class="empty-card">
-        <div class="text-4xl mb-3">➕</div>
-        <p class="text-zinc-300 font-semibold mb-1">Share your artwork</p>
-        <p class="text-sm mb-5">Pick an image, add a title, description and category — coming in the next build.</p>
-        <button class="btn btn-primary" disabled>🎨 Choose image</button>
+      <h2 class="text-xl font-bold mb-4">Create artwork</h2>
+
+      <!-- Mode toggle -->
+      <div class="inline-flex p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg mb-5">
+        <button id="mode-upload-btn" data-mode="upload" class="create-mode-btn px-4 py-1.5 rounded-md text-sm font-semibold">⬆️ Upload</button>
+        <button id="mode-draw-btn" data-mode="draw" class="create-mode-btn px-4 py-1.5 rounded-md text-sm font-semibold">✏️ Draw</button>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Left: source (upload picker OR draw canvas) -->
+        <div>
+          <!-- Upload mode -->
+          <div id="upload-pane">
+            <label id="file-drop"
+              class="flex flex-col items-center justify-center text-center cursor-pointer border border-dashed border-zinc-700 hover:border-violet-500 bg-zinc-900 rounded-2xl p-8 transition-colors">
+              <div class="text-4xl mb-3">🖼️</div>
+              <p class="text-zinc-300 font-semibold mb-1">Choose an image</p>
+              <p class="text-xs text-zinc-500">JPEG, PNG or WebP · resized &amp; compressed on your device</p>
+              <input id="file-input" type="file" accept="image/*" class="hidden">
+            </label>
+          </div>
+
+          <!-- Draw mode -->
+          <div id="draw-pane" class="hidden">
+            <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-3">
+              <!-- Toolbar -->
+              <div class="flex flex-wrap items-center gap-2 mb-3">
+                <div id="brush-types" class="inline-flex p-0.5 bg-zinc-800 rounded-lg"></div>
+                <button id="tool-eraser" class="pill" title="Eraser">🧽 Eraser</button>
+                <span class="flex-1"></span>
+                <button id="draw-undo" class="pill" title="Undo" disabled>↶</button>
+                <button id="draw-redo" class="pill" title="Redo" disabled>↷</button>
+                <button id="draw-clear" class="pill" title="Clear canvas">🗑️</button>
+              </div>
+
+              <!-- Canvas -->
+              <div class="rounded-xl overflow-hidden border border-zinc-800 bg-white" style="touch-action:none">
+                <canvas id="draw-canvas" width="1024" height="1024" class="block w-full h-auto" style="aspect-ratio:1/1;touch-action:none"></canvas>
+              </div>
+
+              <!-- Controls -->
+              <div class="mt-3 space-y-3">
+                <div class="flex items-center gap-3">
+                  <label class="text-xs text-zinc-400 w-14 flex-shrink-0">Color</label>
+                  <input id="brush-color" type="color" value="#7c3aed"
+                    class="w-9 h-9 rounded-md bg-transparent border border-zinc-700 cursor-pointer p-0">
+                  <div id="swatches" class="flex flex-wrap gap-1.5"></div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <label class="text-xs text-zinc-400 w-14 flex-shrink-0">Size</label>
+                  <input id="brush-size" type="range" min="1" max="120" value="12" class="flex-1 accent-violet-500">
+                  <span id="brush-size-val" class="text-xs text-zinc-400 tabular-nums w-8 text-right">12</span>
+                </div>
+                <div class="flex items-center gap-3">
+                  <label class="text-xs text-zinc-400 w-14 flex-shrink-0">Opacity</label>
+                  <input id="brush-opacity" type="range" min="5" max="100" value="100" class="flex-1 accent-violet-500">
+                  <span id="brush-opacity-val" class="text-xs text-zinc-400 tabular-nums w-8 text-right">100</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live preview (shared) -->
+          <div id="preview-wrap" class="hidden mt-4">
+            <p class="section-label mb-2">Preview</p>
+            <img id="preview-img" alt="Preview"
+              class="w-full rounded-xl border border-zinc-800 bg-zinc-900 aspect-square object-contain">
+            <p id="preview-meta" class="text-xs text-zinc-500 mt-1.5"></p>
+          </div>
+        </div>
+
+        <!-- Right: shared metadata form -->
+        <div>
+          <div class="space-y-4">
+            <div>
+              <label class="text-xs text-zinc-400 block mb-1">Title <span class="text-zinc-600">(required)</span></label>
+              <input id="art-title" type="text" maxlength="120" placeholder="Give your piece a title"
+                class="w-full bg-zinc-900 border border-zinc-700 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors">
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 block mb-1">Description</label>
+              <textarea id="art-desc" rows="3" maxlength="2000" placeholder="Tell people about your artwork…"
+                class="w-full bg-zinc-900 border border-zinc-700 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors resize-y"></textarea>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 block mb-1">Category</label>
+              <select id="art-category"
+                class="w-full bg-zinc-900 border border-zinc-700 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors"></select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 block mb-1">Tags <span class="text-zinc-600">(optional, comma-separated)</span></label>
+              <input id="art-tags" type="text" placeholder="e.g. abstract, portrait, neon"
+                class="w-full bg-zinc-900 border border-zinc-700 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors">
+            </div>
+            <div id="create-error" class="hidden text-red-400 text-sm"></div>
+            <button id="art-submit" class="btn btn-primary w-full" disabled>Publish artwork</button>
+            <p class="text-xs text-zinc-600 text-center">Your image is resized and compressed on your device before upload.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -262,13 +377,17 @@
         <div class="w-16 h-16 rounded-full bg-gradient-to-br from-violet-600 to-pink-600 flex items-center justify-center text-2xl flex-shrink-0">🎨</div>
         <div class="min-w-0">
           <p id="profile-name" class="text-lg font-bold truncate">@you</p>
-          <p class="text-sm text-zinc-500">Your gallery &amp; saved artwork</p>
+          <p class="text-sm text-zinc-500"><span id="profile-count" class="tabular-nums">0</span> artworks</p>
         </div>
+        <a href="#upload" class="btn btn-primary ml-auto flex-shrink-0">+ Create</a>
       </div>
-      <div class="empty-card">
-        <div class="text-4xl mb-3">👤</div>
-        <p class="text-zinc-300 font-semibold mb-1">Your profile</p>
-        <p class="text-sm">Your uploads, saved favorites and management dashboard will live here.</p>
+
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="section-label">My Artwork</h3>
+        <button id="profile-refresh" class="pill" title="Refresh">↻ Refresh</button>
+      </div>
+      <div id="my-art-grid" class="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+        <p class="text-zinc-600 text-sm col-span-full">Loading…</p>
       </div>
     </section>
 
@@ -324,6 +443,9 @@ function renderRoute() {
     el.classList.toggle('active', el.getAttribute('data-route') === route);
   });
 
+  // Per-view lazy loads.
+  if (route === 'profile') loadMyArtwork();
+
   // Scroll the freshly shown view to the top.
   const main = document.getElementById('app-main');
   if (main) main.scrollTop = 0;
@@ -331,6 +453,13 @@ function renderRoute() {
 }
 
 window.addEventListener('hashchange', renderRoute);
+
+// HTML-escape a value for safe insertion into innerHTML.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 // ─── Identity ─────────────────────────────────────────────────────────────────
 async function loadMe() {
@@ -346,6 +475,8 @@ async function loadMe() {
   if (nameEl) nameEl.textContent = handle;
   const profEl = document.getElementById('profile-name');
   if (profEl && handle) profEl.textContent = handle;
+  const countEl = document.getElementById('profile-count');
+  if (countEl) countEl.textContent = me.artwork_count ?? 0;
   if (me.isStaging) document.getElementById('staging-badge').classList.remove('hidden');
 }
 
@@ -372,9 +503,434 @@ function registerServiceWorker() {
   });
 }
 
+// Append the platform token so same-origin <img> requests authenticate
+// (image tags can't set the x-usernode-token header; the middleware also
+// accepts ?token=). SW never caches token-bearing or /api/ requests.
+function imgSrc(url) {
+  return token ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : url;
+}
+
+// ─── Image compression (shared by Upload + Draw) ────────────────────────────────
+const UPLOAD_MAX_DIM = 1600;
+const UPLOAD_TARGET_BYTES = 2 * 1024 * 1024;
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b), type, quality));
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+async function loadDrawable(file) {
+  if ('createImageBitmap' in window) {
+    try { return await createImageBitmap(file); } catch { /* fall back */ }
+  }
+  return await new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
+}
+
+// Downscale + re-encode any drawable (file bitmap or the draw canvas) to a
+// JPEG Blob under ~2 MB. A white matte is painted first so transparent
+// drawings export cleanly (JPEG has no alpha).
+async function compressDrawable(drawable, srcW, srcH) {
+  let scale = Math.min(1, UPLOAD_MAX_DIM / Math.max(srcW, srcH));
+  let w = Math.max(1, Math.round(srcW * scale));
+  let h = Math.max(1, Math.round(srcH * scale));
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d');
+  const paint = () => {
+    cv.width = w; cv.height = h;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(drawable, 0, 0, w, h);
+  };
+  paint();
+  let quality = 0.92;
+  let blob = await canvasToBlob(cv, 'image/jpeg', quality);
+  while (blob && blob.size > UPLOAD_TARGET_BYTES && quality > 0.4) {
+    quality -= 0.1;
+    blob = await canvasToBlob(cv, 'image/jpeg', quality);
+  }
+  if (blob && blob.size > UPLOAD_TARGET_BYTES) {
+    w = Math.round(w * 0.75); h = Math.round(h * 0.75);
+    paint();
+    blob = await canvasToBlob(cv, 'image/jpeg', 0.85);
+  }
+  return { blob, width: w, height: h };
+}
+
+// ─── Create screen ──────────────────────────────────────────────────────────────
+let createReady = false;
+let createMode = 'upload';
+let pendingImage = null;       // { dataUrl, width, height, bytes } for Upload mode
+let drawCtx = null, drawInited = false, canvasDirty = false;
+let history = [], histIndex = -1;
+const brush = { type: 'pen', size: 12, opacity: 100, color: '#7c3aed', eraser: false };
+
+const BRUSH_TYPES = [
+  { id: 'pen', label: 'Pen' },
+  { id: 'marker', label: 'Marker' },
+  { id: 'airbrush', label: 'Airbrush' },
+  { id: 'calligraphy', label: 'Calligraphy' },
+];
+const SWATCHES = ['#000000', '#ffffff', '#ef4444', '#f59e0b', '#eab308',
+  '#22c55e', '#3b82f6', '#7c3aed', '#ec4899', '#92400e'];
+
+function createError(msg) {
+  const el = document.getElementById('create-error');
+  if (!el) return;
+  if (msg) { el.textContent = msg; el.classList.remove('hidden'); }
+  else { el.textContent = ''; el.classList.add('hidden'); }
+}
+
+function updateSubmitState() {
+  const btn = document.getElementById('art-submit');
+  if (!btn) return;
+  const hasTitle = document.getElementById('art-title').value.trim().length > 0;
+  const hasImage = createMode === 'upload' ? !!pendingImage : canvasDirty;
+  btn.disabled = !(hasTitle && hasImage);
+}
+
+function setCreateMode(mode) {
+  createMode = (mode === 'draw') ? 'draw' : 'upload';
+  document.getElementById('upload-pane').classList.toggle('hidden', createMode !== 'upload');
+  document.getElementById('draw-pane').classList.toggle('hidden', createMode !== 'draw');
+  // Preview block only applies to Upload; in Draw the canvas itself is the preview.
+  document.getElementById('preview-wrap').classList.toggle('hidden', createMode !== 'upload' || !pendingImage);
+  document.querySelectorAll('.create-mode-btn').forEach((b) =>
+    b.classList.toggle('active', b.getAttribute('data-mode') === createMode));
+  if (createMode === 'draw') initDraw();
+  createError('');
+  updateSubmitState();
+}
+
+async function setPendingFromFile(file) {
+  if (!file) return;
+  if (!file.type || !file.type.startsWith('image/')) { createError('Please choose an image file.'); return; }
+  createError('');
+  try {
+    const drawable = await loadDrawable(file);
+    const sw = drawable.width || drawable.naturalWidth;
+    const sh = drawable.height || drawable.naturalHeight;
+    const { blob, width, height } = await compressDrawable(drawable, sw, sh);
+    const dataUrl = await blobToDataUrl(blob);
+    pendingImage = { dataUrl, width, height, bytes: blob.size };
+    const img = document.getElementById('preview-img');
+    img.src = dataUrl;
+    document.getElementById('preview-wrap').classList.remove('hidden');
+    document.getElementById('preview-meta').textContent =
+      `${width}×${height} · ${(blob.size / 1024).toFixed(0)} KB`;
+    updateSubmitState();
+  } catch (e) {
+    console.warn('image load failed:', e);
+    createError('Could not read that image. Try another file.');
+  }
+}
+
+// ── Drawing engine ──────────────────────────────────────────────────────────────
+function initDraw() {
+  if (drawInited) return;
+  drawInited = true;
+  const cv = document.getElementById('draw-canvas');
+  drawCtx = cv.getContext('2d', { willReadFrequently: true });
+  // White background so exported JPEGs aren't black/transparent.
+  drawCtx.fillStyle = '#ffffff';
+  drawCtx.fillRect(0, 0, cv.width, cv.height);
+  pushHistory();
+
+  const posOf = (e) => {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
+  };
+  let drawing = false, last = null;
+
+  cv.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    drawing = true;
+    try { cv.setPointerCapture(e.pointerId); } catch {}
+    last = posOf(e);
+    drawSegment(last, last, e.pressure || 0.5); // dot on tap
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = posOf(e);
+    drawSegment(last, p, e.pressure || 0.5);
+    last = p;
+  });
+  const finish = () => {
+    if (!drawing) return;
+    drawing = false;
+    canvasDirty = true;
+    pushHistory();
+    updateSubmitState();
+  };
+  cv.addEventListener('pointerup', finish);
+  cv.addEventListener('pointercancel', finish);
+}
+
+function strokeColor() { return brush.eraser ? '#ffffff' : brush.color; }
+
+function drawSegment(a, b, pressure) {
+  const ctx = drawCtx;
+  if (!ctx) return;
+  const opacity = brush.opacity / 100;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  if (brush.type === 'airbrush') {
+    ctx.globalAlpha = Math.min(1, opacity * 0.5);
+    ctx.fillStyle = strokeColor();
+    const steps = Math.max(1, Math.round(Math.hypot(b.x - a.x, b.y - a.y) / 3));
+    for (let s = 0; s <= steps; s++) {
+      const x = a.x + (b.x - a.x) * s / steps;
+      const y = a.y + (b.y - a.y) * s / steps;
+      const dots = Math.max(2, Math.round(brush.size / 2));
+      for (let i = 0; i < dots; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const rad = Math.random() * brush.size;
+        ctx.beginPath();
+        ctx.arc(x + Math.cos(ang) * rad, y + Math.sin(ang) * rad, brush.size * 0.06 + 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (brush.type === 'calligraphy') {
+    ctx.globalAlpha = opacity;
+    ctx.fillStyle = strokeColor();
+    const steps = Math.max(1, Math.round(Math.hypot(b.x - a.x, b.y - a.y) / 2));
+    const w = brush.size, h = Math.max(1, brush.size * 0.35);
+    for (let s = 0; s <= steps; s++) {
+      const x = a.x + (b.x - a.x) * s / steps;
+      const y = a.y + (b.y - a.y) * s / steps;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(-Math.PI / 4);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  } else {
+    // pen (pressure-sensitive) and marker (wider, flatter)
+    ctx.globalAlpha = opacity;
+    ctx.strokeStyle = strokeColor();
+    const base = brush.type === 'marker' ? brush.size * 1.5 : brush.size * (0.4 + 0.6 * pressure);
+    ctx.lineWidth = Math.max(0.5, base);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function pushHistory() {
+  if (!drawCtx) return;
+  const cv = drawCtx.canvas;
+  history = history.slice(0, histIndex + 1);
+  history.push(drawCtx.getImageData(0, 0, cv.width, cv.height));
+  if (history.length > 25) history.shift();
+  histIndex = history.length - 1;
+  updateUndoRedo();
+}
+function restoreHistory(i) { if (history[i]) drawCtx.putImageData(history[i], 0, 0); }
+function undoDraw() { if (histIndex > 0) { histIndex--; restoreHistory(histIndex); updateUndoRedo(); } }
+function redoDraw() { if (histIndex < history.length - 1) { histIndex++; restoreHistory(histIndex); updateUndoRedo(); } }
+function updateUndoRedo() {
+  const u = document.getElementById('draw-undo'), r = document.getElementById('draw-redo');
+  if (u) u.disabled = histIndex <= 0;
+  if (r) r.disabled = histIndex >= history.length - 1;
+}
+function clearCanvas() {
+  if (!drawCtx) return;
+  const cv = drawCtx.canvas;
+  drawCtx.globalAlpha = 1;
+  drawCtx.fillStyle = '#ffffff';
+  drawCtx.fillRect(0, 0, cv.width, cv.height);
+  canvasDirty = false;
+  pushHistory();
+  updateSubmitState();
+}
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+async function submitArtwork() {
+  const btn = document.getElementById('art-submit');
+  const title = document.getElementById('art-title').value.trim();
+  if (!title) { createError('A title is required.'); return; }
+  createError('');
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Publishing…';
+  try {
+    let dataUrl, width, height;
+    if (createMode === 'upload') {
+      if (!pendingImage) throw new Error('Choose an image first.');
+      ({ dataUrl, width, height } = pendingImage);
+    } else {
+      const cv = document.getElementById('draw-canvas');
+      const out = await compressDrawable(cv, cv.width, cv.height);
+      dataUrl = await blobToDataUrl(out.blob);
+      width = out.width; height = out.height;
+    }
+    const body = {
+      title,
+      description: document.getElementById('art-desc').value,
+      categorySlug: document.getElementById('art-category').value || 'other',
+      tags: document.getElementById('art-tags').value,
+      image: dataUrl,
+      width, height,
+    };
+    await api('POST', '/api/artwork', body);
+    resetCreate();
+    await loadMe();          // refresh artwork_count
+    location.hash = '#profile';
+    loadMyArtwork();
+  } catch (e) {
+    createError(e.message || 'Could not publish artwork.');
+  } finally {
+    btn.textContent = label;
+    updateSubmitState();
+  }
+}
+
+function resetCreate() {
+  document.getElementById('art-title').value = '';
+  document.getElementById('art-desc').value = '';
+  document.getElementById('art-tags').value = '';
+  pendingImage = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('preview-wrap').classList.add('hidden');
+  if (drawInited) clearCanvas();
+  updateSubmitState();
+}
+
+async function loadCategories() {
+  const sel = document.getElementById('art-category');
+  if (!sel) return;
+  try {
+    const { categories } = await api('GET', '/api/categories');
+    sel.innerHTML = categories.map((c) => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="other">Other</option>';
+  }
+}
+
+function buildBrushUI() {
+  const types = document.getElementById('brush-types');
+  if (types) {
+    types.innerHTML = BRUSH_TYPES.map((b) =>
+      `<button type="button" class="brush-type ${b.id === brush.type ? 'active' : ''}" data-brush="${b.id}">${b.label}</button>`).join('');
+    types.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-brush]');
+      if (!t) return;
+      brush.type = t.getAttribute('data-brush');
+      brush.eraser = false;
+      document.getElementById('tool-eraser').classList.remove('!border-violet-500', '!text-violet-300');
+      types.querySelectorAll('.brush-type').forEach((b) => b.classList.toggle('active', b === t));
+    });
+  }
+  const sw = document.getElementById('swatches');
+  if (sw) {
+    sw.innerHTML = SWATCHES.map((c) =>
+      `<span class="swatch" data-color="${c}" style="background:${c}"></span>`).join('');
+    sw.addEventListener('click', (e) => {
+      const s = e.target.closest('[data-color]');
+      if (!s) return;
+      brush.color = s.getAttribute('data-color');
+      brush.eraser = false;
+      document.getElementById('brush-color').value = brush.color;
+      document.getElementById('tool-eraser').classList.remove('!border-violet-500', '!text-violet-300');
+      sw.querySelectorAll('.swatch').forEach((x) => x.classList.toggle('active', x === s));
+    });
+  }
+}
+
+function initCreate() {
+  if (createReady) return;
+  createReady = true;
+
+  loadCategories();
+  buildBrushUI();
+
+  document.querySelectorAll('.create-mode-btn').forEach((b) =>
+    b.addEventListener('click', () => setCreateMode(b.getAttribute('data-mode'))));
+
+  const fileInput = document.getElementById('file-input');
+  fileInput.addEventListener('change', (e) => setPendingFromFile(e.target.files && e.target.files[0]));
+
+  document.getElementById('art-title').addEventListener('input', updateSubmitState);
+  document.getElementById('art-submit').addEventListener('click', submitArtwork);
+
+  // Draw controls
+  document.getElementById('brush-color').addEventListener('input', (e) => {
+    brush.color = e.target.value; brush.eraser = false;
+    document.getElementById('tool-eraser').classList.remove('!border-violet-500', '!text-violet-300');
+    document.querySelectorAll('#swatches .swatch').forEach((x) => x.classList.remove('active'));
+  });
+  const size = document.getElementById('brush-size');
+  size.addEventListener('input', () => {
+    brush.size = parseInt(size.value) || 1;
+    document.getElementById('brush-size-val').textContent = brush.size;
+  });
+  const opac = document.getElementById('brush-opacity');
+  opac.addEventListener('input', () => {
+    brush.opacity = parseInt(opac.value) || 100;
+    document.getElementById('brush-opacity-val').textContent = brush.opacity;
+  });
+  document.getElementById('tool-eraser').addEventListener('click', (e) => {
+    brush.eraser = !brush.eraser;
+    e.currentTarget.classList.toggle('!border-violet-500', brush.eraser);
+    e.currentTarget.classList.toggle('!text-violet-300', brush.eraser);
+  });
+  document.getElementById('draw-undo').addEventListener('click', undoDraw);
+  document.getElementById('draw-redo').addEventListener('click', redoDraw);
+  document.getElementById('draw-clear').addEventListener('click', clearCanvas);
+
+  setCreateMode('upload');
+}
+
+// ─── My Artwork grid ────────────────────────────────────────────────────────────
+async function loadMyArtwork() {
+  const grid = document.getElementById('my-art-grid');
+  if (!grid) return;
+  grid.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">Loading…</p>';
+  try {
+    const { artworks } = await api('GET', '/api/artworks/mine');
+    if (!artworks.length) {
+      grid.innerHTML =
+        '<div class="empty-card col-span-full"><div class="text-4xl mb-3">🎨</div>' +
+        '<p class="text-zinc-300 font-semibold mb-1">No artwork yet</p>' +
+        '<p class="text-sm">Tap <a href="#upload" class="text-violet-400 hover:text-violet-300 font-medium">Create</a> to upload or draw your first piece.</p></div>';
+      return;
+    }
+    grid.innerHTML = artworks.map((a) => `
+      <div class="art-card">
+        <img src="${esc(imgSrc(a.image_url))}" alt="${esc(a.title)}" loading="lazy">
+        <div class="p-2">
+          <p class="text-sm font-semibold truncate">${esc(a.title)}</p>
+          <p class="text-[0.7rem] text-zinc-500 truncate">${esc(a.category_name || 'Uncategorized')}</p>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    grid.innerHTML = `<p class="text-red-400 text-sm col-span-full">${esc(e.message)}</p>`;
+  }
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   if (!location.hash) location.replace('#feed');
+  initCreate();
+  const refresh = document.getElementById('profile-refresh');
+  if (refresh) refresh.addEventListener('click', loadMyArtwork);
   renderRoute();
   registerServiceWorker();
   await loadMe();
