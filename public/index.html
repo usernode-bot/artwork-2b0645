@@ -2,7 +2,7 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <script>
   // usernode-dev-console@1
@@ -94,7 +94,8 @@
     /* ── Session view (responsive two-column → stacked) ──────────────── */
     #session-view {
       position: fixed;
-      top: var(--header-h); left: 0; right: 0; bottom: 0;
+      top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+      left: 0; right: 0; bottom: 0;
       z-index: 15;
       background: #09090b;
       flex-direction: column;
@@ -124,6 +125,9 @@
         align-items: stretch;
         justify-content: flex-start;
         padding: 20px;
+        padding-bottom: max(20px, env(safe-area-inset-bottom, 0px));
+        padding-left: max(20px, env(safe-area-inset-left, 0px));
+        padding-right: max(20px, env(safe-area-inset-right, 0px));
         gap: 16px;
         overflow-y: auto;
       }
@@ -180,6 +184,29 @@
     }
     .pill:not(:disabled):hover { border-color: #52525b; color: #e4e4e7; }
 
+    /* ── Mobile: header safe-area, no-zoom inputs, larger touch targets ── */
+    /* Notch / status-bar inset: grow the header by the top inset and pad its
+       sides for rounded-corner / landscape safe areas. #session-view's top
+       offset uses the same calc() so the overlay stays flush below it. */
+    #app-header {
+      height: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-left: max(1rem, env(safe-area-inset-left, 0px));
+      padding-right: max(1rem, env(safe-area-inset-right, 0px));
+    }
+
+    @media (max-width: 640px) {
+      /* ≥16px prevents iOS Safari auto-zoom on focus. Covers the
+         dynamically-injected bid inputs (which carry the text-sm class). */
+      input, textarea, select { font-size: 16px; }
+
+      /* Comfortable finger targets without bloating the dense desktop UI. */
+      .btn  { min-height: 44px; }
+      .pill { min-height: 40px; padding-top: 8px; padding-bottom: 8px; }
+      .word-chip { min-height: 40px; padding-top: 8px; padding-bottom: 8px; }
+      #archive-cols-group button { min-height: 40px; }
+    }
+
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #18181b; }
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
@@ -193,12 +220,12 @@
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
 
   <!-- Header -->
-  <header id="app-header" class="sticky top-0 z-20 bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-4 flex items-center justify-between gap-4" style="height:var(--header-h);flex-shrink:0">
-    <h1 class="text-base font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork Workspace</h1>
-    <div class="flex items-center flex-shrink-0 gap-3">
+  <header id="app-header" class="sticky top-0 z-20 bg-zinc-900/95 backdrop-blur border-b border-zinc-800 flex items-center justify-between gap-2 sm:gap-3" style="flex-shrink:0">
+    <h1 class="text-base font-bold tracking-tight truncate min-w-0">🎨 Artwork<span class="hidden sm:inline"> Workspace</span></h1>
+    <div class="flex items-center flex-shrink-0 gap-2 sm:gap-3">
       <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
-      <span id="username-display" class="text-sm text-zinc-400"></span>
-      <button id="new-session-btn" class="btn btn-primary" disabled>+ New Session</button>
+      <span id="username-display" class="text-sm text-zinc-400 hidden sm:inline"></span>
+      <button id="new-session-btn" class="btn btn-primary" disabled><span class="sm:hidden">+ New</span><span class="hidden sm:inline">+ New Session</span></button>
     </div>
   </header>
 
@@ -264,7 +291,7 @@
               class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-none disabled:bg-zinc-800">
               🎁 <span id="lv-gift-label">Send a gift</span>
             </button>
-            <div id="lv-share" class="flex items-center gap-2 mt-2"></div>
+            <div id="lv-share" class="flex flex-wrap items-center gap-2 mt-2"></div>
           </div>
         </div>
         <p class="mt-4 text-sm text-zinc-400 italic" id="lv-prompt"></p>
@@ -289,8 +316,8 @@
   </div>
 
   <!-- New Session Modal -->
-  <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+  <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 p-4 overflow-y-auto">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl my-auto max-h-[calc(100vh-2rem)] overflow-y-auto">
       <h2 class="text-lg font-semibold mb-1">New Session</h2>
       <p class="text-sm text-zinc-500 mb-4">Give your session a name, then enter 10 words that will inspire the artwork.</p>
       <input id="modal-name" type="text" placeholder="Session name (e.g. Cosmic Dream)" maxlength="80"
@@ -310,8 +337,8 @@
   </div>
 
   <!-- Word Edit Modal -->
-  <div id="word-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-xs shadow-2xl">
+  <div id="word-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 p-4 overflow-y-auto">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-xs shadow-2xl my-auto max-h-[calc(100vh-2rem)] overflow-y-auto">
       <h2 class="text-base font-semibold mb-0.5">Change Word</h2>
       <p class="text-xs text-zinc-500 mb-4">Replacing: <span id="wm-current" class="text-violet-300 font-medium"></span></p>
       <input id="wm-word" type="text" placeholder="New word" maxlength="30"
@@ -347,8 +374,8 @@
 </div>
 
 <!-- Gift modal — sends real on-chain funds via the wallet, NOT in-app credits -->
-<div id="gift-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-  <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+<div id="gift-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 p-4 overflow-y-auto">
+  <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl my-auto max-h-[calc(100vh-2rem)] overflow-y-auto">
     <h2 class="text-lg font-semibold text-white mb-1">🎁 Send a gift</h2>
     <p class="text-xs text-zinc-500 mb-4">Tip the artwork owner with on-chain funds from your linked wallet. This is separate from your in-app credits.</p>
 
