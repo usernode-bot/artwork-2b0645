@@ -107,6 +107,56 @@ function parseWords(input) {
   return String(input || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
 }
 
+// ─── Image generation ─────────────────────────────────────────────────────────
+async function generateImageWithReplicate(prompt) {
+  const key = process.env.REPLICATE_API_KEY;
+  if (!key) {
+    console.log('[generate] REPLICATE_API_KEY not set — using placeholder');
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const resp = await fetch(
+      'https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'wait'
+        },
+        body: JSON.stringify({ input: { prompt, aspect_ratio: '1:1' } }),
+        signal: controller.signal
+      }
+    );
+
+    if (!resp.ok) {
+      console.warn(`[generate] Replicate returned ${resp.status} — falling back to placeholder`);
+      return null;
+    }
+
+    const prediction = await resp.json();
+    if (prediction.status !== 'succeeded' || !Array.isArray(prediction.output) || !prediction.output[0]) {
+      console.warn(`[generate] Replicate prediction status: ${prediction.status} — falling back to placeholder`);
+      return null;
+    }
+
+    return prediction.output[0];
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      console.warn('[generate] Replicate timed out after 60s — falling back to placeholder');
+    } else {
+      console.warn('[generate] Replicate error:', err.message, '— falling back to placeholder');
+    }
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -540,7 +590,8 @@ app.post('/api/generate', async (req, res) => {
 
     const wordsStr = session.words || '';
     const prompt = `A beautiful artwork inspired by: ${wordsStr}`;
-    const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
+    const generatedUrl = await generateImageWithReplicate(prompt);
+    const imageUrl = generatedUrl || `https://picsum.photos/seed/${sessionId}/512/512`;
 
     await pool.query(
       `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
