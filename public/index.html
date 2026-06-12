@@ -198,7 +198,6 @@
     <div class="flex items-center flex-shrink-0 gap-3">
       <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
       <span id="username-display" class="text-sm text-zinc-400"></span>
-      <button id="new-session-btn" class="btn btn-primary" disabled>+ New Session</button>
     </div>
   </header>
 
@@ -209,7 +208,7 @@
     <div id="no-session-view" class="flex flex-col items-center justify-center py-24 text-zinc-500">
       <div class="text-6xl mb-5">🖼️</div>
       <p class="text-lg font-semibold text-zinc-300 mb-1.5">No active session</p>
-      <p class="text-sm text-zinc-500 mb-7">Create a new session to start a collaborative artwork.</p>
+      <p class="text-sm text-zinc-500 mb-7">Create an artwork to start a collaborative session.</p>
       <button id="cta-create-artwork"
         class="inline-flex items-center gap-2 px-8 py-4 bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-lg font-semibold rounded-xl shadow-lg shadow-violet-900/40 hover:shadow-violet-700/50 transition-all hover:-translate-y-0.5">
         🎨 Create Artwork
@@ -288,12 +287,12 @@
     </div>
   </div>
 
-  <!-- New Session Modal -->
+  <!-- Create Artwork Modal -->
   <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
     <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-      <h2 class="text-lg font-semibold mb-1">New Session</h2>
-      <p class="text-sm text-zinc-500 mb-4">Give your session a name, then enter 5 words that will inspire the artwork.</p>
-      <input id="modal-name" type="text" placeholder="Session name (e.g. Cosmic Dream)" maxlength="80"
+      <h2 class="text-lg font-semibold mb-1">Create Artwork</h2>
+      <p class="text-sm text-zinc-500 mb-4">Give your artwork a name, then enter 5 words that will inspire it.</p>
+      <input id="modal-name" type="text" placeholder="Artwork name (e.g. Cosmic Dream)" maxlength="80"
         class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
       <div class="relative mb-1">
         <input id="modal-words" type="text" placeholder="e.g. ocean stars fire ancient glass"
@@ -492,8 +491,6 @@ function renderSmallWordChips(container, words) {
 function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
-  document.getElementById('new-session-btn').disabled =
-    !!(activeSession && (activeSession.state === 'active' || activeSession.state === 'auction'));
 }
 
 function renderMain() {
@@ -1211,9 +1208,9 @@ function initSocket() {
   });
 }
 
-// ─── New Session Modal ────────────────────────────────────────────────────────
+// ─── Create Artwork Modal ─────────────────────────────────────────────────────
 function initModal() {
-  const btn      = document.getElementById('new-session-btn');
+  const cta      = document.getElementById('cta-create-artwork');
   const modal    = document.getElementById('modal');
   const cancel   = document.getElementById('modal-cancel');
   const create   = document.getElementById('modal-create');
@@ -1234,7 +1231,7 @@ function initModal() {
   wordsInp.addEventListener('input', updateWordCount);
   nameInp.addEventListener('input', updateWordCount);
 
-  btn.addEventListener('click', () => {
+  cta.addEventListener('click', () => {
     nameInp.value = ''; wordsInp.value = '';
     updateWordCount();
     errEl.classList.add('hidden');
@@ -1247,7 +1244,7 @@ function initModal() {
   async function doCreate() {
     const name  = nameInp.value.trim();
     const words = parseInputWords(wordsInp.value);
-    if (!name) { errEl.textContent = 'Please enter a session name.'; errEl.classList.remove('hidden'); return; }
+    if (!name) { errEl.textContent = 'Please enter an artwork name.'; errEl.classList.remove('hidden'); return; }
     if (words.length !== 5) { errEl.textContent = 'Please enter exactly 5 words.'; errEl.classList.remove('hidden'); return; }
     create.disabled = true; create.textContent = 'Creating…'; errEl.classList.add('hidden');
     try {
@@ -1316,12 +1313,6 @@ async function init() {
   });
 
   initGiftModal();
-
-  // Landing-screen CTA — opens the same New Session flow as the header button.
-  document.getElementById('cta-create-artwork').addEventListener('click', () => {
-    const headerBtn = document.getElementById('new-session-btn');
-    if (!headerBtn.disabled) headerBtn.click();
-  });
 
   // Share controls live in both the locked view and archive cards — handle
   // them with one delegated listener.
