@@ -13,6 +13,81 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
+// --- Replicate text-to-image generation -----------------------------------
+// The artwork image is generated from the session's 10 words via Replicate's
+// HTTP predictions API (no SDK — plain fetch). REPLICATE_API_KEY is declared in
+// dapp.json as optional; when it's absent (e.g. local dev) we fall back to the
+// picsum stub below so the app still works without a key.
+const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
+// Pinned model version so output style / input schema don't drift under us.
+// stability-ai/sdxl — a fast, inexpensive text-to-image model.
+const REPLICATE_MODEL_VERSION = '7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bda';
+// Square edge requested from the model. 1024 front-loads enough resolution that
+// the OG card (1200) and download proxy (2048) don't need provider-side upscaling.
+const GENERATED_IMAGE_SIZE = 1024;
+// Overall budget for create + poll before we give up and let the winner retry.
+const REPLICATE_TIMEOUT_MS = 60000;
+const REPLICATE_POLL_INTERVAL_MS = 1500;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Generate an image from `prompt` via Replicate and return its hosted URL.
+// Throws on auth/API error, failed prediction, or timeout — callers treat any
+// throw as "generation failed, leave the session recoverable".
+async function generateImageWithReplicate(prompt) {
+  const startedAt = Date.now();
+  const createRes = await fetch('https://api.replicate.com/v1/predictions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${REPLICATE_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      version: REPLICATE_MODEL_VERSION,
+      input: {
+        prompt,
+        width: GENERATED_IMAGE_SIZE,
+        height: GENERATED_IMAGE_SIZE,
+      },
+    }),
+  });
+
+  if (!createRes.ok) {
+    const detail = await createRes.text().catch(() => '');
+    throw new Error(`Replicate create failed (${createRes.status}): ${detail.slice(0, 300)}`);
+  }
+
+  let prediction = await createRes.json();
+  const pollUrl = prediction?.urls?.get;
+
+  while (prediction.status !== 'succeeded') {
+    if (prediction.status === 'failed' || prediction.status === 'canceled') {
+      throw new Error(`Replicate prediction ${prediction.status}: ${prediction.error || 'no detail'}`);
+    }
+    if (Date.now() - startedAt > REPLICATE_TIMEOUT_MS) {
+      throw new Error('Replicate prediction timed out');
+    }
+    if (!pollUrl) throw new Error('Replicate response missing poll URL');
+    await sleep(REPLICATE_POLL_INTERVAL_MS);
+    const pollRes = await fetch(pollUrl, {
+      headers: { 'Authorization': `Bearer ${REPLICATE_API_KEY}` },
+    });
+    if (!pollRes.ok) {
+      const detail = await pollRes.text().catch(() => '');
+      throw new Error(`Replicate poll failed (${pollRes.status}): ${detail.slice(0, 300)}`);
+    }
+    prediction = await pollRes.json();
+  }
+
+  // SDXL returns an array of output URLs; some models return a bare string.
+  const output = prediction.output;
+  const imageUrl = Array.isArray(output) ? output[0] : output;
+  if (!imageUrl || typeof imageUrl !== 'string') {
+    throw new Error('Replicate succeeded but returned no image URL');
+  }
+  return imageUrl;
+}
+
 const PUBLIC_API_PATHS = new Set(['/health']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
 // per-artwork share landing page (`GET /a/:id`), which must be reachable
@@ -160,7 +235,12 @@ app.get('/api/me', async (req, res) => {
       // On-chain wallet address (ut1…) or null if the user hasn't linked one.
       // Distinct from `credits`, which is the in-app bidding balance.
       usernode_pubkey: req.user.usernode_pubkey ?? null,
-      isStaging: IS_STAGING
+      isStaging: IS_STAGING,
+      // True when no Replicate key is configured, so generation falls back to
+      // the picsum stub (images unrelated to the words). Exposes only the
+      // boolean, never the key value. Lets the UI warn that output is a
+      // placeholder until a key is set.
+      generationStubbed: !REPLICATE_API_KEY
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -230,14 +310,16 @@ app.get('/api/artworks/science', async (req, res) => {
   }
 });
 
-// Highest-resolution square we request from the upstream image source.
-// (picsum.photos serves up to 5000px; 2048 is a high-res JPEG that stays
-// well within that limit and keeps the proxied download reasonably sized.)
+// Target square edge for the high-res download. This only applies to picsum
+// stub URLs (legacy / no-key fallback), which support path-based resizing.
+// Real provider URLs (e.g. Replicate's replicate.delivery) don't support this,
+// so they're served at their native generation resolution (GENERATED_IMAGE_SIZE).
 const DOWNLOAD_IMAGE_SIZE = 2048;
 
-// Rewrite the stored image URL to request the largest available JPEG.
-// picsum.photos takes the size in the path and a `.jpg` suffix forces JPEG
-// output, e.g. https://picsum.photos/seed/<seed>/2048/2048.jpg
+// For picsum stub URLs, rewrite the path to request a higher-resolution JPEG
+// (picsum takes the size in the path and a `.jpg` suffix forces JPEG output,
+// e.g. https://picsum.photos/seed/<seed>/2048/2048.jpg). For any other host the
+// URL is returned unchanged — the provider serves the image as generated.
 function toHighResJpegUrl(url, size = DOWNLOAD_IMAGE_SIZE) {
   try {
     const u = new URL(url);
@@ -331,7 +413,9 @@ app.get('/api/session/:id/image/download', async (req, res) => {
     const filename = `${safeName}.jpg`;
 
     const buf = Buffer.from(await upstream.arrayBuffer());
-    res.setHeader('Content-Type', 'image/jpeg');
+    // Forward the upstream Content-Type rather than assuming JPEG — the image
+    // provider (e.g. Replicate) may serve PNG/WebP.
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'image/jpeg');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Length', buf.length);
     res.send(buf);
@@ -604,9 +688,32 @@ app.post('/api/generate', async (req, res) => {
     }
 
     const wordsStr = session.words || '';
-    const prompt = `A beautiful artwork inspired by: ${wordsStr}`;
-    const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
+    // Build the prompt from the session's comma-joined words. Guard against an
+    // all-whitespace `words` value with a generic fallback so we never send an
+    // empty prompt to the model.
+    const cleanWords = wordsStr.split(',').map((w) => w.trim()).filter(Boolean);
+    const prompt = cleanWords.length
+      ? `A beautiful artwork inspired by: ${cleanWords.join(', ')}`
+      : 'A beautiful abstract artwork';
 
+    // Real generation when a key is configured; otherwise fall back to the
+    // picsum stub so the app still works locally without a Replicate key.
+    let imageUrl;
+    if (REPLICATE_API_KEY) {
+      try {
+        imageUrl = await generateImageWithReplicate(prompt);
+      } catch (err) {
+        // Leave the session in `auction` state so the winner can retry. We have
+        // not locked the session or written any row yet, so this is recoverable.
+        console.error('Replicate generation failed:', err.message);
+        return res.status(502).json({ error: 'Image generation failed, please try again' });
+      }
+    } else {
+      console.warn('REPLICATE_API_KEY not set — using picsum stub for artwork generation');
+      imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
+    }
+
+    // Only persist + lock + broadcast once we have a real image URL in hand.
     await pool.query(
       `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,

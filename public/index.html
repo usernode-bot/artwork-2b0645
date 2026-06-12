@@ -209,6 +209,14 @@
   <!-- Main -->
   <div id="workspace-main" class="flex-1 p-4 flex flex-col gap-4">
 
+    <!-- Stub-mode warning: shown when no Replicate API key is configured, so
+         generated images are random placeholders unrelated to the words. -->
+    <div id="generation-stub-banner" class="hidden text-sm text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-4 py-3">
+      ⚠️ <span class="font-semibold">Image generation isn't configured.</span>
+      Generated artwork is a random placeholder and won't match your words until a
+      <span class="font-medium">Replicate API key</span> is set in Settings → Secrets.
+    </div>
+
     <!-- No active session -->
     <div id="no-session-view" class="flex flex-col items-center justify-center py-24 text-zinc-500">
       <div class="text-6xl mb-5">🖼️</div>
@@ -566,6 +574,7 @@ function renderSmallWordChips(container, words) {
 function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
+  document.getElementById('generation-stub-banner').classList.toggle('hidden', !(me && me.generationStubbed));
 }
 
 function renderMain() {
