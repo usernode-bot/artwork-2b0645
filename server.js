@@ -47,6 +47,56 @@ io.use((socket, next) => {
   next(new Error('Authentication error'));
 });
 
+// ─── Session presence (ephemeral, in-memory) ───────────────────────────────────
+// Tracks who is currently connected to each session room so the client can show
+// a live "N here now" indicator. Deliberately NOT persisted: it resets on
+// restart and clients re-announce via `join-session` on reconnect, so it
+// self-heals. Shape: Map<sessionId, Map<userId, { username, sockets:Set<id> }>>.
+const sessionPresence = new Map();
+
+// Build the deduped participant payload for a session room.
+function presencePayload(sessionId) {
+  const users = sessionPresence.get(sessionId);
+  const participants = users
+    ? [...users.values()].map(u => ({ userId: u.userId, username: u.username }))
+    : [];
+  return { sessionId, participants, count: participants.length };
+}
+
+function emitPresence(sessionId) {
+  io.to(`session:${sessionId}`).emit('presence-update', presencePayload(sessionId));
+}
+
+// Add a socket's user to a session's presence set (ref-counted by socket id so
+// multiple tabs from one user count once). Returns true if the set changed.
+function addPresence(sessionId, socket) {
+  if (!socket.user) return false;
+  const userId = socket.user.id;
+  let users = sessionPresence.get(sessionId);
+  if (!users) { users = new Map(); sessionPresence.set(sessionId, users); }
+  let entry = users.get(userId);
+  if (!entry) {
+    entry = { userId, username: socket.user.username, sockets: new Set() };
+    users.set(userId, entry);
+  }
+  entry.sockets.add(socket.id);
+  return true;
+}
+
+// Remove a socket from a session's presence set, dropping the user when their
+// last tab disconnects and the room when it empties.
+function removePresence(sessionId, socket) {
+  const users = sessionPresence.get(sessionId);
+  if (!users) return false;
+  const userId = socket.user?.id;
+  const entry = userId != null ? users.get(userId) : null;
+  if (!entry) return false;
+  entry.sockets.delete(socket.id);
+  if (entry.sockets.size === 0) users.delete(userId);
+  if (users.size === 0) sessionPresence.delete(sessionId);
+  return true;
+}
+
 // ─── Auction timer ────────────────────────────────────────────────────────────
 let auctionTimer = null;
 
@@ -226,7 +276,7 @@ function publicOrigin(req) {
 async function getLockedArtwork(sessionId) {
   if (!sessionId) return null;
   const { rows } = await pool.query(`
-    SELECT s.id, s.name, s.creator_username, s.state, s.words,
+    SELECT s.id, s.name, s.creator_username, s.state, s.words, s.description,
       a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
       g.image_url, g.prompt,
       (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count
@@ -277,12 +327,19 @@ app.get('/api/session/:id/image/download', async (req, res) => {
 
 app.post('/api/session', async (req, res) => {
   try {
-    const { name, words: rawWords } = req.body;
+    const { name, words: rawWords, description: rawDescription } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
 
     const words = parseWords(rawWords);
     if (words.length !== 5) return res.status(400).json({ error: 'Exactly 5 words required' });
     if (words.some(w => w.length > 30)) return res.status(400).json({ error: 'Each word must be 30 characters or fewer' });
+
+    // Optional subtitle. Empty/whitespace → null; cap length consistent with
+    // the other create-time validations above.
+    const description = String(rawDescription ?? '').trim() || null;
+    if (description && description.length > 280) {
+      return res.status(400).json({ error: 'Description must be 280 characters or fewer' });
+    }
 
     const { rows: existing } = await pool.query(
       `SELECT id FROM sessions WHERE state IN ('active', 'auction') LIMIT 1`
@@ -290,8 +347,8 @@ app.post('/api/session', async (req, res) => {
     if (existing.length) return res.status(409).json({ error: 'A session is already active' });
 
     const { rows } = await pool.query(
-      `INSERT INTO sessions (name, creator_user_id, creator_username, state, words) VALUES ($1, $2, $3, 'active', $4) RETURNING *`,
-      [name.trim(), req.user.id, req.user.username, words.join(',')]
+      `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, description) VALUES ($1, $2, $3, 'active', $4, $5) RETURNING *`,
+      [name.trim(), req.user.id, req.user.username, words.join(','), description]
     );
 
     io.emit('session-created', { session: rows[0] });
@@ -685,8 +742,33 @@ app.post('/api/session/:id/gift', async (req, res) => {
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  socket.on('join-session', (sessionId) => {
+  socket.on('join-session', (rawSessionId) => {
+    const sessionId = parseInt(rawSessionId);
+    if (!sessionId) return;
+
+    // Leave any previously-joined session room and update its presence.
+    const prev = socket.data.sessionId;
+    if (prev && prev !== sessionId) {
+      socket.leave(`session:${prev}`);
+      if (removePresence(prev, socket)) emitPresence(prev);
+    }
+
+    socket.data.sessionId = sessionId;
     socket.join(`session:${sessionId}`);
+    if (addPresence(sessionId, socket)) emitPresence(sessionId);
+  });
+
+  socket.on('leave-session', () => {
+    const sessionId = socket.data.sessionId;
+    if (!sessionId) return;
+    socket.leave(`session:${sessionId}`);
+    socket.data.sessionId = null;
+    if (removePresence(sessionId, socket)) emitPresence(sessionId);
+  });
+
+  socket.on('disconnect', () => {
+    const sessionId = socket.data.sessionId;
+    if (sessionId && removePresence(sessionId, socket)) emitPresence(sessionId);
   });
 });
 
@@ -704,6 +786,7 @@ app.get('/share-api/:id', async (req, res) => {
     res.json({
       id: artwork.id,
       name: artwork.name,
+      description: artwork.description || null,
       creator_username: artwork.creator_username,
       winner_username: artwork.winner_username,
       winning_bid: artwork.winning_bid != null ? parseInt(artwork.winning_bid) : null,
@@ -751,6 +834,7 @@ app.get('/a/:id', async (req, res) => {
     const eTitle = escapeHtml(title);
     const eDesc = escapeHtml(description);
     const eName = escapeHtml(artwork.name);
+    const eDescription = escapeHtml(artwork.description || '');
     const eCreator = escapeHtml(artwork.creator_username);
     const eWinner = escapeHtml(artwork.winner_username || '');
     const eShareUrl = escapeHtml(shareUrl);
@@ -767,6 +851,10 @@ app.get('/a/:id', async (req, res) => {
 
     const wordChips = words.map(w =>
       `<span class="chip">${escapeHtml(w)}</span>`).join('');
+
+    const descLine = artwork.description
+      ? `<p class="desc">${eDescription}</p>`
+      : '';
 
     const winnerLine = artwork.winner_username
       ? `<p class="meta">🏆 <span class="hl">@${eWinner}</span>${artwork.winning_bid != null ? ` · ${parseInt(artwork.winning_bid)} credits` : ''}</p>`
@@ -810,6 +898,7 @@ app.get('/a/:id', async (req, res) => {
     .body { padding:20px; }
     h1 { font-size:1.35rem; font-weight:700; margin:0 0 4px; letter-spacing:-.01em; }
     .meta { font-size:.85rem; color:#a1a1aa; margin:2px 0; }
+    .desc { font-size:.9rem; color:#d4d4d8; margin:10px 0 0; line-height:1.4; font-style:italic; }
     .hl { color:#c4b5fd; }
     .chips { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 4px; }
     .chip { display:inline-flex; padding:5px 12px; border-radius:9999px; font-size:.78rem; font-weight:500;
@@ -827,6 +916,7 @@ app.get('/a/:id', async (req, res) => {
       <div class="body">
         <h1>${eName}</h1>
         <p class="meta">by <span class="hl">@${eCreator}</span></p>
+        ${descLine}
         ${winnerLine}
         <div class="chips">${wordChips}</div>
         <a class="cta" href="${eUsernodeUrl}">Open in Usernode →</a>
@@ -872,6 +962,10 @@ async function start() {
     )
   `);
   await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS words TEXT`);
+  // Optional, creator-authored subtitle for an artwork. Nullable; pre-existing
+  // rows render with no description. Public, in-app-visible content → stays in
+  // the public `sessions` table (no staging:private marker needed).
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS description TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_credits (
       id SERIAL PRIMARY KEY,
