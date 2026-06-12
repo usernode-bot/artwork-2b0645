@@ -282,6 +282,22 @@
         <div id="archive-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
       </div>
     </div>
+    <!-- Search / filter / sort controls -->
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <input id="archive-search" type="search" placeholder="Search by name or creator…"
+        class="flex-1 min-w-[12rem] bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-violet-600">
+      <select id="archive-status"
+        class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
+        <option value="completed">Completed</option>
+        <option value="in_progress">In progress</option>
+        <option value="all">All</option>
+      </select>
+      <select id="archive-sort"
+        class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
+        <option value="newest">Newest first</option>
+        <option value="oldest">Oldest first</option>
+      </select>
+    </div>
     <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
     </div>
@@ -822,27 +838,52 @@ function filenameFromDisposition(header) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+// Current archive control state. Read fresh from the DOM on each render so
+// the values always reflect what the user has selected.
+function archiveQuery() {
+  const q = (document.getElementById('archive-search')?.value || '').trim();
+  const status = document.getElementById('archive-status')?.value || 'completed';
+  const sort = document.getElementById('archive-sort')?.value || 'newest';
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  params.set('status', status);
+  params.set('sort', sort);
+  return { qs: params.toString(), q, status, sort };
+}
+
 async function renderArchive() {
   try {
-    const { sessions } = await api('GET', '/api/sessions/locked');
+    const { qs, q, status } = archiveQuery();
+    const { sessions } = await api('GET', `/api/sessions/locked?${qs}`);
     const el = document.getElementById('archive-list');
     if (!sessions.length) {
-      el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
+      // Distinguish "nothing matches the active filters" from a genuinely
+      // empty archive (default view, no search and showing completed).
+      const filtered = q || status !== 'completed';
+      const msg = filtered ? 'No artworks match your search.' : 'No completed sessions yet.';
+      el.innerHTML = `<p class="text-zinc-600 text-sm col-span-full">${msg}</p>`;
       applyArchiveCols(); return;
     }
     el.innerHTML = sessions.map(s => {
       const words = (s.words || '').split(',').filter(Boolean);
       const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
+      // A session is a finished, giftable/likable artwork only once it's locked
+      // (which is also when its generated image exists). In-progress sessions
+      // get a placeholder image, an "In progress" badge, and no actions.
+      const isCompleted = s.state === 'locked';
       return `
         <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
+          <div class="relative">
+            <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
+              class="w-full aspect-video object-cover bg-zinc-800 ${isCompleted ? 'cursor-pointer hover:opacity-90 transition-opacity' : 'opacity-60'}" loading="lazy">
+            ${isCompleted ? '' : '<span class="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[0.65rem] font-semibold uppercase tracking-wide bg-amber-500/90 text-black">In progress</span>'}
+          </div>
           <div class="p-4">
             <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
             <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
             ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
             <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
-            ${(() => {
+            ${!isCompleted ? '' : (() => {
               const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
               const giftTotal = Number(s.gift_total || 0);
               const ownerName = s.owner_username || s.winner_username || '';
@@ -1332,6 +1373,16 @@ async function init() {
   });
   window.addEventListener('resize', onArchiveResize);
   applyArchiveCols();
+
+  // Archive search / filter / sort controls. Search input is debounced so we
+  // don't refetch on every keystroke; the dropdowns refetch immediately.
+  let _archiveSearchTimer;
+  document.getElementById('archive-search')?.addEventListener('input', () => {
+    clearTimeout(_archiveSearchTimer);
+    _archiveSearchTimer = setTimeout(renderArchive, 300);
+  });
+  document.getElementById('archive-status')?.addEventListener('change', renderArchive);
+  document.getElementById('archive-sort')?.addEventListener('change', renderArchive);
 
   try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
 
