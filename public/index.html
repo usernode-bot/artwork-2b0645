@@ -179,6 +179,14 @@
       cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
     .pill:not(:disabled):hover { border-color: #52525b; color: #e4e4e7; }
+    /* Provenance badge (informational, not a button): AI = violet, human = amber */
+    .src-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 9999px; font-size: 0.7rem; font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .src-badge.src-ai { background: rgba(124,58,237,.15); border-color: rgba(124,58,237,.4); color: #c4b5fd; }
+    .src-badge.src-human { background: rgba(245,158,11,.15); border-color: rgba(245,158,11,.4); color: #fcd34d; }
 
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #18181b; }
@@ -248,6 +256,7 @@
           <div>
             <p class="font-semibold text-white text-lg leading-tight" id="lv-name"></p>
             <p class="text-xs text-zinc-500 mt-0.5">Session locked · artwork generated</p>
+            <div id="lv-source" class="mt-1.5"></div>
           </div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -630,6 +639,7 @@ function updateCountdown(remaining) {
 
 function renderLockedView(data) {
   document.getElementById('lv-name').textContent   = data.name;
+  document.getElementById('lv-source').innerHTML   = sourceBadge(data.source);
   document.getElementById('lv-artwork').src        = data.image_url || '';
   document.getElementById('lv-prompt').textContent = data.prompt || '';
   document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username || '?'} · ${data.winning_bid || data.current_bid || '?'} credits`;
@@ -840,6 +850,7 @@ async function renderArchive() {
           <div class="p-4">
             <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
             <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
+            <div class="mt-1.5">${sourceBadge(s.source)}</div>
             ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
             <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
             ${(() => {
@@ -877,6 +888,17 @@ async function renderArchive() {
 
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Provenance pill shown on archive cards and the detail view. 'human' renders
+// the warm "Human-made" badge; anything else (including 'ai', null, or an
+// unknown value) falls back to the violet "AI-generated" badge.
+function sourceBadge(source) {
+  const isHuman = source === 'human';
+  const cls = isHuman ? 'src-human' : 'src-ai';
+  const label = isHuman ? '🎨 Human-made' : '🤖 AI-generated';
+  const title = isHuman ? 'Human-made artwork' : 'AI-generated artwork';
+  return `<span class="src-badge ${cls}" title="${esc(title)}" aria-label="${esc(title)}">${label}</span>`;
 }
 
 // ─── Gifts (on-chain tips, NOT in-app credits) ─────────────────────────────────
@@ -1194,6 +1216,7 @@ function initSocket() {
         owner_username: data.winnerUsername,
         owner_user_id: data.ownerUserId,
         owner_pubkey: data.ownerPubkey,
+        source: data.source || 'ai',
         gift_total: 0,
         words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
       };

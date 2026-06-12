@@ -148,7 +148,7 @@ app.get('/api/sessions/locked', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
-        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username, g.source,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
         (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
@@ -228,7 +228,7 @@ async function getLockedArtwork(sessionId) {
   const { rows } = await pool.query(`
     SELECT s.id, s.name, s.creator_username, s.state, s.words,
       a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
-      g.image_url, g.prompt,
+      g.image_url, g.prompt, g.source,
       (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count
     FROM sessions s
     LEFT JOIN auctions a ON a.session_id = s.id
@@ -543,8 +543,8 @@ app.post('/api/generate', async (req, res) => {
     const imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
 
     await pool.query(
-      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'ai')`,
       [sessionId, req.user.id, req.user.username, imageUrl, prompt, null, req.user.usernode_pubkey ?? null]
     );
 
@@ -557,7 +557,8 @@ app.post('/api/generate', async (req, res) => {
       words: wordsStr.split(','),
       winnerUsername: req.user.username,
       ownerUserId: req.user.id,
-      ownerPubkey: req.user.usernode_pubkey ?? null
+      ownerPubkey: req.user.usernode_pubkey ?? null,
+      source: 'ai'
     });
 
     res.json({ ok: true, imageUrl, prompt });
@@ -710,7 +711,8 @@ app.get('/share-api/:id', async (req, res) => {
       image_url: artwork.image_url,
       prompt: artwork.prompt,
       words: (artwork.words || '').split(',').filter(Boolean),
-      like_count: artwork.like_count || 0
+      like_count: artwork.like_count || 0,
+      source: artwork.source || 'ai'
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -776,6 +778,15 @@ app.get('/a/:id', async (req, res) => {
       ? `<img class="art" src="${eImg}" alt="${eName}">`
       : '';
 
+    // Provenance badge — 'human' shows the warm "Human-made" pill; anything
+    // else (including 'ai', null, or an unknown value) falls back to the
+    // violet "AI-generated" pill.
+    const isHuman = artwork.source === 'human';
+    const badgeLabel = isHuman ? '🎨 Human-made' : '🤖 AI-generated';
+    const badgeTitle = isHuman ? 'Human-made artwork' : 'AI-generated artwork';
+    const badgeClass = isHuman ? 'badge badge-human' : 'badge badge-ai';
+    const sourceBadge = `<span class="${badgeClass}" title="${escapeHtml(badgeTitle)}" aria-label="${escapeHtml(badgeTitle)}">${badgeLabel}</span>`;
+
     res.type('html').send(`<!doctype html>
 <html lang="en">
 <head>
@@ -814,6 +825,10 @@ app.get('/a/:id', async (req, res) => {
     .chips { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 4px; }
     .chip { display:inline-flex; padding:5px 12px; border-radius:9999px; font-size:.78rem; font-weight:500;
       background:rgba(124,58,237,.15); border:1px solid rgba(124,58,237,.35); color:#c4b5fd; }
+    .badge { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border-radius:9999px;
+      font-size:.72rem; font-weight:600; margin:6px 0 2px; }
+    .badge-ai { background:rgba(124,58,237,.15); border:1px solid rgba(124,58,237,.4); color:#c4b5fd; }
+    .badge-human { background:rgba(245,158,11,.15); border:1px solid rgba(245,158,11,.4); color:#fcd34d; }
     .cta { display:block; text-align:center; margin-top:20px; padding:12px 16px; background:var(--accent);
       color:#fff; border-radius:10px; text-decoration:none; font-size:.92rem; font-weight:600; transition:background .12s; }
     .cta:hover { background:#8b5cf6; }
@@ -827,6 +842,7 @@ app.get('/a/:id', async (req, res) => {
       <div class="body">
         <h1>${eName}</h1>
         <p class="meta">by <span class="hl">@${eCreator}</span></p>
+        ${sourceBadge}
         ${winnerLine}
         <div class="chips">${wordChips}</div>
         <a class="cta" href="${eUsernodeUrl}">Open in Usernode →</a>
@@ -927,6 +943,11 @@ async function start() {
   // gifts can be routed even after the owner's JWT is gone. Null for artworks
   // generated before this column existed or by owners with no linked wallet.
   await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS owner_pubkey TEXT`);
+  // Provenance of the artwork: 'ai' for machine-generated, 'human' for a
+  // hand-made upload. Every artwork today is produced by /api/generate, so the
+  // default backfills all existing rows to 'ai'. 'human' is supported for a
+  // future human-upload path but nothing writes it yet.
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'ai'`);
   // On-chain gifts/tips sent to artwork owners. Financial data (wallet
   // addresses + amounts) → private: copied schema-only into staging.
   await pool.query(`
