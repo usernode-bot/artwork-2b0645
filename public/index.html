@@ -188,6 +188,35 @@
     #lightbox { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
     #lightbox.lb-open { opacity: 1; pointer-events: auto; }
     #lightbox-img.lb-zoomed { transform: scale(2); cursor: zoom-out !important; }
+
+    /* ── Provenance / source badges ──────────────────────────────────── */
+    .src-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 9999px;
+      font-size: 0.7rem; font-weight: 600;
+    }
+    .src-ai {
+      background: rgba(124,58,237,0.15);
+      border: 1px solid rgba(124,58,237,0.4);
+      color: #c4b5fd;
+    }
+    .src-human {
+      background: rgba(245,158,11,0.15);
+      border: 1px solid rgba(245,158,11,0.4);
+      color: #fcd34d;
+    }
+
+    /* ── Vote buttons in the validation queue ────────────────────────── */
+    .vote-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 11px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;
+      border: 1px solid #3f3f46; background: #27272a; color: #a1a1aa;
+      cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .vote-btn:not(:disabled):hover { border-color: #52525b; color: #e4e4e7; }
+    .vote-btn.voted-yes { background: rgba(16,185,129,0.18); border-color: rgba(16,185,129,0.5); color: #6ee7b7; }
+    .vote-btn.voted-no  { background: rgba(239,68,68,0.18);  border-color: rgba(239,68,68,0.5);  color: #fca5a5; }
+    .vote-btn:disabled  { opacity: 0.45; cursor: not-allowed; }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
@@ -220,6 +249,10 @@
       <button id="cta-create-artwork"
         class="inline-flex items-center gap-2 px-8 py-4 bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-lg font-semibold rounded-xl shadow-lg shadow-violet-900/40 hover:shadow-violet-700/50 transition-all hover:-translate-y-0.5">
         🎨 Create Artwork
+      </button>
+      <button id="cta-upload-artwork"
+        class="mt-4 inline-flex items-center gap-2 px-6 py-2.5 bg-amber-700/70 hover:bg-amber-600/80 active:bg-amber-800 text-amber-100 text-sm font-semibold rounded-xl border border-amber-700/60 transition-all">
+        📤 Upload Human-made Art
       </button>
     </div>
 
@@ -262,6 +295,7 @@
           <div>
             <p class="section-label mb-2.5">5 Words</p>
             <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
+            <div id="lv-source" class="mt-2"></div>
           </div>
           <div>
             <p class="section-label mb-2.5">Generated Artwork</p>
@@ -279,6 +313,16 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- Pending Validation Queue -->
+  <div id="validation-section" class="hidden px-4 pb-6">
+    <div class="flex items-center justify-between gap-4 mb-3">
+      <h2 class="section-label">Pending Validation — Human-made Artworks</h2>
+      <span class="text-xs text-zinc-500">Community votes decide what's real</span>
+    </div>
+    <!-- Dismissible rejection notices are injected here by renderValidationQueue() -->
+    <div id="validation-list" class="flex flex-col gap-3"></div>
   </div>
 
   <!-- Archive -->
@@ -312,6 +356,27 @@
       <div class="flex gap-2">
         <button id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
         <button id="modal-create" class="btn btn-primary flex-1" disabled>Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload Human-made Artwork Modal -->
+  <div id="upload-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+      <h2 class="text-lg font-semibold mb-1">📤 Upload Human-made Art</h2>
+      <p class="text-sm text-zinc-500 mb-4">Share artwork you created. The community will vote to validate it's genuinely human-made.</p>
+      <input id="upload-title" type="text" placeholder="Artwork title (e.g. Forest at Dusk)" maxlength="80"
+        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm mb-3 outline-none transition-colors">
+      <label class="block text-xs text-zinc-500 mb-1.5">Image <span class="text-zinc-600">(JPEG / PNG / WebP, max 10 MB)</span></label>
+      <input id="upload-file" type="file" accept="image/jpeg,image/png,image/webp"
+        class="block w-full text-sm text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-violet-900/50 file:text-violet-300 hover:file:bg-violet-800/60 mb-3 cursor-pointer">
+      <div id="upload-preview-wrap" class="hidden mb-3">
+        <img id="upload-preview" src="" alt="Preview" class="w-full max-h-48 object-contain rounded-lg bg-zinc-800">
+      </div>
+      <div id="upload-error" class="hidden text-red-400 text-xs mb-3"></div>
+      <div class="flex gap-2">
+        <button id="upload-cancel" class="btn btn-secondary flex-1">Cancel</button>
+        <button id="upload-submit" class="btn btn-primary flex-1" disabled>Submit</button>
       </div>
     </div>
   </div>
@@ -495,6 +560,14 @@ function renderSmallWordChips(container, words) {
   });
 }
 
+// ─── Provenance badge ─────────────────────────────────────────────────────────
+function sourceBadge(source) {
+  if (source === 'human') {
+    return `<span class="src-badge src-human" title="Human-made artwork" aria-label="Human-made artwork">🎨 Human-made</span>`;
+  }
+  return `<span class="src-badge src-ai" title="AI-generated artwork" aria-label="AI-generated artwork">🤖 AI-generated</span>`;
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
@@ -645,6 +718,9 @@ function renderLockedView(data) {
   const words = getWords(data);
   renderSmallWordChips(document.getElementById('lv-words'), words);
 
+  const sourceEl = document.getElementById('lv-source');
+  if (sourceEl) sourceEl.innerHTML = sourceBadge(data.source || 'ai');
+
   const dlBtn = document.getElementById('lv-download');
   if (dlBtn) {
     const hasImage = !!data.image_url;
@@ -722,11 +798,41 @@ async function downloadArtwork(sessionId, btn) {
   }
 }
 
+// Download a validated human-uploaded artwork via the server proxy.
+async function downloadUploadArtwork(uploadId, title, btn) {
+  if (!uploadId) return;
+  const original = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⬇️ Downloading…'; }
+  try {
+    const res = await fetch(`/api/upload/${uploadId}/image/download`, { headers: { 'x-usernode-token': token } });
+    if (!res.ok) {
+      let msg = 'Download failed';
+      try { msg = (await res.json()).error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `upload-${uploadId}.jpg`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(err.message || 'Download failed');
+  } finally {
+    if (btn && original !== null) { btn.disabled = false; btn.innerHTML = original; }
+  }
+}
+
 // ─── Sharing ──────────────────────────────────────────────────────────────────
-// Public share URL for an artwork. The app runs on its own subdomain inside
-// the iframe, so location.origin already equals the public origin that serves
-// the /a/:id landing page.
+// Public share URL for an AI-session artwork.
 function shareUrlFor(id) { return `${location.origin}/a/${id}`; }
+
+// Public share URL for a validated human upload.
+function shareUploadUrlFor(id) { return `${location.origin}/a/h/${id}`; }
 
 // Markup for the per-artwork share controls (copy link / X / Facebook). Title
 // is HTML-escaped for the attribute; dataset reads it back as the raw string.
@@ -736,6 +842,15 @@ function shareButtonsHtml(id, title) {
     <button type="button" class="pill" data-share-copy="${esc(id)}" title="Copy link">🔗 <span class="share-copy-label">Copy link</span></button>
     <button type="button" class="pill" data-share-x="${esc(id)}" data-share-title="${t}" title="Share on X" aria-label="Share on X">𝕏</button>
     <button type="button" class="pill" data-share-fb="${esc(id)}" title="Share on Facebook" aria-label="Share on Facebook">f</button>`;
+}
+
+// Same but for human uploads — routes to /a/h/:id
+function uploadShareButtonsHtml(id, title) {
+  const t = esc(title || '');
+  return `
+    <button type="button" class="pill" data-upload-share-copy="${esc(id)}" title="Copy link">🔗 <span class="share-copy-label">Copy link</span></button>
+    <button type="button" class="pill" data-upload-share-x="${esc(id)}" data-share-title="${t}" title="Share on X" aria-label="Share on X">𝕏</button>
+    <button type="button" class="pill" data-upload-share-fb="${esc(id)}" title="Share on Facebook" aria-label="Share on Facebook">f</button>`;
 }
 
 async function copyShareLink(id, btn) {
@@ -771,14 +886,58 @@ async function copyShareLink(id, btn) {
   }
 }
 
+async function copyUploadShareLink(id, btn) {
+  const url = shareUploadUrlFor(id);
+  let ok = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+      ok = true;
+    }
+  } catch {}
+  if (!ok) {
+    try {
+      const inp = document.createElement('input');
+      inp.value = url;
+      inp.style.position = 'fixed';
+      inp.style.opacity = '0';
+      document.body.appendChild(inp);
+      inp.focus(); inp.select();
+      ok = document.execCommand('copy');
+      inp.remove();
+    } catch {}
+  }
+  if (btn) {
+    const label = btn.querySelector('.share-copy-label');
+    if (label) {
+      const prev = label.dataset.prev || label.textContent;
+      label.dataset.prev = prev;
+      label.textContent = ok ? 'Copied!' : 'Copy failed';
+      clearTimeout(btn._copyTimer);
+      btn._copyTimer = setTimeout(() => { label.textContent = prev; }, 1600);
+    }
+  }
+}
+
 function shareToX(id, title) {
   const text = (title ? `${title} — Artwork` : 'Check out this artwork') + ' 🎨';
   const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrlFor(id))}`;
   window.open(intent, '_blank', 'noopener,noreferrer');
 }
 
+function shareUploadToX(id, title) {
+  const text = (title ? `${title} — Human-made Artwork` : 'Check out this artwork') + ' 🎨';
+  const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUploadUrlFor(id))}`;
+  window.open(intent, '_blank', 'noopener,noreferrer');
+}
+
 function shareToFacebook(id) {
   const intent = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrlFor(id))}`;
+  window.open(intent, '_blank', 'noopener,noreferrer');
+}
+
+function shareUploadToFacebook(id) {
+  const intent = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUploadUrlFor(id))}`;
   window.open(intent, '_blank', 'noopener,noreferrer');
 }
 
@@ -831,61 +990,343 @@ function filenameFromDisposition(header) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+// ─── Archive ──────────────────────────────────────────────────────────────────
 async function renderArchive() {
   try {
-    const { sessions } = await api('GET', '/api/sessions/locked');
+    const [sessResult, uploadsResult] = await Promise.all([
+      api('GET', '/api/sessions/locked'),
+      fetch('/api/gallery/uploads', { headers: { 'x-usernode-token': token } })
+        .then(r => r.ok ? r.json() : { uploads: [] })
+        .catch(() => ({ uploads: [] }))
+    ]);
+
+    const sessions = sessResult.sessions || [];
+    const uploads = uploadsResult.uploads || [];
+
+    // Normalise into a common shape for rendering
+    const aiItems = sessions.map(s => ({ ...s, _type: 'ai', _sortDate: s.locked_at || s.created_at }));
+    const humanItems = uploads.map(u => ({ ...u, _type: 'human', _sortDate: u.resolved_at || u.created_at }));
+
+    const all = [...aiItems, ...humanItems].sort((a, b) => {
+      return new Date(b._sortDate || 0) - new Date(a._sortDate || 0);
+    });
+
     const el = document.getElementById('archive-list');
-    if (!sessions.length) {
+    if (!all.length) {
       el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
       applyArchiveCols(); return;
     }
-    el.innerHTML = sessions.map(s => {
-      const words = (s.words || '').split(',').filter(Boolean);
-      const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
-      return `
-        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
-          <div class="p-4">
-            <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
-            <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
-            ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
-            <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
-            ${(() => {
-              const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
-              const giftTotal = Number(s.gift_total || 0);
-              const ownerName = s.owner_username || s.winner_username || '';
-              return `<div class="flex flex-wrap items-center gap-2 mt-3">
-              <button type="button" data-like-session="${esc(s.id)}"
-                class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
-                <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
-                <span class="like-count tabular-nums">${s.like_count || 0}</span>
-              </button>
-              <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
-                data-gift-session="${esc(s.id)}"
-                data-owner-pubkey="${esc(s.owner_pubkey || '')}"
-                data-owner-name="${esc(ownerName)}"
-                ${giftReason ? 'disabled' : ''}
-                title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
-                <span>🎁</span>
-                <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
-              </button>
-              ${shareButtonsHtml(s.id, s.name)}
-              ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
-            </div>`;
-            })()}
-          </div>
-        </div>`;
+
+    el.innerHTML = all.map(item => {
+      if (item._type === 'human') {
+        return renderHumanUploadCard(item);
+      } else {
+        return renderAiArtworkCard(item);
+      }
     }).join('');
+
     el.querySelectorAll('button[data-download]').forEach(btn => {
       btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
+    });
+    el.querySelectorAll('button[data-upload-download]').forEach(btn => {
+      const id = parseInt(btn.getAttribute('data-upload-download'));
+      const title = btn.getAttribute('data-upload-title') || '';
+      btn.addEventListener('click', () => downloadUploadArtwork(id, title, btn));
     });
     applyArchiveCols();
   } catch (err) { console.error('archive error:', err); }
 }
 
+function renderAiArtworkCard(s) {
+  const words = (s.words || '').split(',').filter(Boolean);
+  const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
+  const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
+  const giftTotal = Number(s.gift_total || 0);
+  const ownerName = s.owner_username || s.winner_username || '';
+  return `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
+      <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
+        class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
+      <div class="p-4">
+        <div class="flex items-start justify-between gap-2 mb-0.5">
+          <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
+          ${sourceBadge(s.source || 'ai')}
+        </div>
+        <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
+        ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
+        <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+          <button type="button" data-like-session="${esc(s.id)}"
+            class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
+            <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
+            <span class="like-count tabular-nums">${s.like_count || 0}</span>
+          </button>
+          <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
+            data-gift-session="${esc(s.id)}"
+            data-owner-pubkey="${esc(s.owner_pubkey || '')}"
+            data-owner-name="${esc(ownerName)}"
+            ${giftReason ? 'disabled' : ''}
+            title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
+            <span>🎁</span>
+            <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
+          </button>
+          ${shareButtonsHtml(s.id, s.name)}
+          ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderHumanUploadCard(u) {
+  return `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
+      <img src="${esc(u.image_url)}" alt="${esc(u.title)}"
+        class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
+      <div class="p-4">
+        <div class="flex items-start justify-between gap-2 mb-0.5">
+          <p class="font-semibold text-sm text-white truncate">${esc(u.title)}</p>
+          ${sourceBadge('human')}
+        </div>
+        <p class="text-xs text-zinc-500 mt-0.5">by @${esc(u.username)}</p>
+        <p class="text-xs text-emerald-400 mt-1">✅ Community validated · ${u.yes_count || 0} 👍 ${u.no_count || 0} 👎</p>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+          ${uploadShareButtonsHtml(u.id, u.title)}
+          <button data-upload-download="${esc(u.id)}" data-upload-title="${esc(u.title)}" class="pill">⬇️ Download</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Validation queue ─────────────────────────────────────────────────────────
+function formatCountdown(remainingMs) {
+  if (remainingMs <= 0) return 'Expired';
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m left`;
+  if (m > 0) return `${m}m left`;
+  return `<1m left`;
+}
+
+function getDismissedRejected() {
+  try { return JSON.parse(localStorage.getItem('dismissed-rejected') || '[]'); } catch { return []; }
+}
+
+function dismissRejected(id) {
+  try {
+    const arr = getDismissedRejected();
+    if (!arr.includes(id)) { arr.push(id); localStorage.setItem('dismissed-rejected', JSON.stringify(arr)); }
+  } catch {}
+}
+
+async function renderValidationQueue() {
+  try {
+    const data = await api('GET', '/api/uploads/pending');
+    const uploads = data.uploads || [];
+    const myRejected = (data.myRejected || []).filter(r => !getDismissedRejected().includes(r.id));
+
+    const section = document.getElementById('validation-section');
+    const list = document.getElementById('validation-list');
+
+    if (!uploads.length && !myRejected.length) {
+      section.classList.add('hidden');
+      return;
+    }
+    section.classList.remove('hidden');
+
+    // Rejection notices for the uploader
+    const rejectedHtml = myRejected.map(r => `
+      <div class="flex items-start gap-3 bg-red-950/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm" data-rejected-notice="${esc(r.id)}">
+        <span class="text-red-400 text-base flex-shrink-0">✗</span>
+        <div class="flex-1 min-w-0">
+          <span class="font-medium text-red-300">"${esc(r.title)}"</span>
+          <span class="text-red-400/80"> was rejected by the community.</span>
+        </div>
+        <button class="text-zinc-500 hover:text-zinc-300 text-xs" data-dismiss-rejected="${esc(r.id)}">Dismiss</button>
+      </div>`).join('');
+
+    const isOwnUpload = (upload) => me && me.id != null && upload.user_id != null && upload.user_id === me.id;
+
+    const uploadsHtml = uploads.map(u => {
+      const expiresAt = new Date(u.created_at).getTime() + 72 * 60 * 60 * 1000;
+      const remaining = expiresAt - Date.now();
+      const isOwn = isOwnUpload(u);
+      const myVote = u.my_vote; // 'yes', 'no', or null
+      const yesActive = myVote === 'yes' ? 'voted-yes' : '';
+      const noActive  = myVote === 'no'  ? 'voted-no'  : '';
+      const disabledAttr = isOwn ? 'disabled' : '';
+      const ownNote = isOwn ? '<span class="text-xs text-zinc-500 ml-1">(your upload)</span>' : '';
+      const net = (parseInt(u.yes_count) || 0) - (parseInt(u.no_count) || 0);
+      const needed = Math.max(0, 5 - net);
+      return `
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden" data-upload-card="${esc(u.id)}">
+          <div class="flex gap-4 p-4">
+            <img src="${esc('/upload-image/' + u.id)}" alt="${esc(u.title)}"
+              class="w-20 h-20 rounded-lg object-cover bg-zinc-800 flex-shrink-0 cursor-pointer hover:opacity-90 transition-opacity">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-start gap-2 flex-wrap">
+                <p class="font-semibold text-sm text-white">${esc(u.title)}</p>${ownNote}
+              </div>
+              <p class="text-xs text-zinc-500 mt-0.5">by @${esc(u.username)}</p>
+              <p class="text-xs text-zinc-500 mt-0.5">${formatCountdown(remaining)}</p>
+              <div class="flex items-center gap-2 mt-3 flex-wrap">
+                <button class="vote-btn ${yesActive}" data-vote-btn="yes" data-upload-id="${esc(u.id)}" ${disabledAttr}>
+                  👍 <span class="vote-yes-count">${u.yes_count || 0}</span>
+                </button>
+                <button class="vote-btn ${noActive}" data-vote-btn="no" data-upload-id="${esc(u.id)}" ${disabledAttr}>
+                  👎 <span class="vote-no-count">${u.no_count || 0}</span>
+                </button>
+                <span class="text-xs text-zinc-500">${needed > 0 ? `${needed} more 👍 needed` : 'Almost there!'}</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    list.innerHTML = rejectedHtml + uploadsHtml;
+  } catch (err) { console.error('validation queue error:', err); }
+}
+
+async function handleVote(uploadId, vote, btn) {
+  if (btn.disabled) return;
+  const card = btn.closest('[data-upload-card]');
+  if (!card) return;
+  btn.disabled = true;
+  try {
+    const data = await api('POST', `/api/upload/${uploadId}/vote`, { vote });
+    // Update vote counts in the card
+    const yesCountEl = card.querySelector('.vote-yes-count');
+    const noCountEl  = card.querySelector('.vote-no-count');
+    if (yesCountEl) yesCountEl.textContent = data.yesCount;
+    if (noCountEl)  noCountEl.textContent  = data.noCount;
+    // Update button active state
+    const yesBtn = card.querySelector('[data-vote-btn="yes"]');
+    const noBtn  = card.querySelector('[data-vote-btn="no"]');
+    if (yesBtn) { yesBtn.className = 'vote-btn' + (data.myVote === 'yes' ? ' voted-yes' : ''); }
+    if (noBtn)  { noBtn.className  = 'vote-btn' + (data.myVote === 'no'  ? ' voted-no'  : ''); }
+    // If resolved, re-render the queue and archive
+    if (data.status !== 'pending') {
+      renderValidationQueue();
+      renderArchive();
+    }
+  } catch (err) {
+    alert(err.message || 'Vote failed');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─── Upload modal ─────────────────────────────────────────────────────────────
+function initUploadModal() {
+  const ctaBtn    = document.getElementById('cta-upload-artwork');
+  const modal     = document.getElementById('upload-modal');
+  const cancelBtn = document.getElementById('upload-cancel');
+  const submitBtn = document.getElementById('upload-submit');
+  const titleInp  = document.getElementById('upload-title');
+  const fileInp   = document.getElementById('upload-file');
+  const preview   = document.getElementById('upload-preview');
+  const prevWrap  = document.getElementById('upload-preview-wrap');
+  const errEl     = document.getElementById('upload-error');
+
+  let selectedDataUrl = null;
+
+  function resetModal() {
+    titleInp.value = '';
+    fileInp.value = '';
+    selectedDataUrl = null;
+    prevWrap.classList.add('hidden');
+    preview.src = '';
+    errEl.classList.add('hidden');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submit';
+  }
+
+  function updateSubmitState() {
+    submitBtn.disabled = !(titleInp.value.trim() && selectedDataUrl);
+  }
+
+  titleInp.addEventListener('input', updateSubmitState);
+
+  fileInp.addEventListener('change', () => {
+    const file = fileInp.files[0];
+    errEl.classList.add('hidden');
+    if (!file) { selectedDataUrl = null; prevWrap.classList.add('hidden'); updateSubmitState(); return; }
+
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      errEl.textContent = 'Please choose a JPEG, PNG, or WebP image.';
+      errEl.classList.remove('hidden');
+      selectedDataUrl = null; prevWrap.classList.add('hidden'); updateSubmitState(); return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      errEl.textContent = 'Image must be under 10 MB.';
+      errEl.classList.remove('hidden');
+      selectedDataUrl = null; prevWrap.classList.add('hidden'); updateSubmitState(); return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = e => {
+      selectedDataUrl = e.target.result;
+      preview.src = selectedDataUrl;
+      prevWrap.classList.remove('hidden');
+      updateSubmitState();
+    };
+    reader.onerror = () => {
+      errEl.textContent = 'Could not read the selected file.';
+      errEl.classList.remove('hidden');
+      selectedDataUrl = null; prevWrap.classList.add('hidden'); updateSubmitState();
+    };
+    reader.readAsDataURL(file);
+  });
+
+  ctaBtn.addEventListener('click', () => {
+    resetModal();
+    modal.classList.remove('hidden');
+    setTimeout(() => titleInp.focus(), 50);
+  });
+  cancelBtn.addEventListener('click', () => modal.classList.add('hidden'));
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
+
+  submitBtn.addEventListener('click', submitUpload.bind(null, { titleInp, submitBtn, errEl, modal, selectedDataUrlGetter: () => selectedDataUrl }));
+
+  // Expose the getter so submitUpload can read the current value
+  submitBtn._getDataUrl = () => selectedDataUrl;
+}
+
+async function submitUpload(ctx) {
+  const { titleInp, submitBtn, errEl, modal } = ctx;
+  const imageData = submitBtn._getDataUrl();
+  const title = titleInp.value.trim();
+
+  if (!title) { errEl.textContent = 'Please enter a title.'; errEl.classList.remove('hidden'); return; }
+  if (!imageData) { errEl.textContent = 'Please select an image.'; errEl.classList.remove('hidden'); return; }
+
+  errEl.classList.add('hidden');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Uploading…';
+
+  try {
+    await api('POST', '/api/upload', { title, imageData });
+    modal.classList.add('hidden');
+    showUploadSuccessBanner();
+    renderValidationQueue();
+  } catch (err) {
+    errEl.textContent = err.message || 'Upload failed.';
+    errEl.classList.remove('hidden');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Submit';
+  }
+}
+
+function showUploadSuccessBanner() {
+  const banner = document.createElement('div');
+  banner.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-emerald-900 border border-emerald-700 text-emerald-200 text-sm font-medium px-5 py-3 rounded-xl shadow-xl flex items-center gap-2';
+  banner.innerHTML = '✅ Submitted! Your artwork is now in the validation queue.';
+  document.body.appendChild(banner);
+  setTimeout(() => banner.remove(), 4000);
 }
 
 // ─── Gifts (on-chain tips, NOT in-app credits) ─────────────────────────────────
@@ -1003,8 +1444,6 @@ function updateGiftBadge(sessionId, total) {
 }
 
 // ─── Sharing utilities (network share dialogs) ────────────────────────────────
-// Build descriptive share text from an artwork's name + its 5 words.
-// `artwork.words` may be an array (locked view) or a comma string (archive).
 function buildShareText(artwork) {
   const name = (artwork.name || 'Untitled').trim();
   const words = Array.isArray(artwork.words)
@@ -1017,12 +1456,9 @@ function buildShareText(artwork) {
   return text;
 }
 
-// Build network share-dialog URLs from the artwork's PUBLIC image URL.
-// Never share location.href / the ?token= param — that would leak the JWT.
 function shareUrls(imageUrl, text) {
   const u = encodeURIComponent(imageUrl);
   return {
-    // Facebook's sharer.php only honors the `u` (URL) param; text is ignored.
     twitter: `https://twitter.com/intent/tweet?url=${u}&text=${encodeURIComponent(text)}`,
     facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
   };
@@ -1204,6 +1640,7 @@ function initSocket() {
         owner_user_id: data.ownerUserId,
         owner_pubkey: data.ownerPubkey,
         gift_total: 0,
+        source: data.source || 'ai',
         words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
       };
       activeSession = null; auctionEnded = false;
@@ -1214,6 +1651,26 @@ function initSocket() {
       document.getElementById('locked-view').classList.remove('hidden');
     }
     renderArchive();
+  });
+
+  // Human upload real-time events
+  socket.on('upload-validated', () => {
+    renderValidationQueue();
+    renderArchive();
+  });
+
+  socket.on('upload-rejected', () => {
+    renderValidationQueue();
+  });
+
+  socket.on('upload-vote-updated', ({ id, yesCount, noCount }) => {
+    // Update counts on the visible card without a full re-render
+    const card = document.querySelector(`[data-upload-card="${id}"]`);
+    if (!card) return;
+    const yesEl = card.querySelector('.vote-yes-count');
+    const noEl  = card.querySelector('.vote-no-count');
+    if (yesEl) yesEl.textContent = yesCount;
+    if (noEl)  noEl.textContent  = noCount;
   });
 }
 
@@ -1303,6 +1760,7 @@ async function init() {
   initModal();
   initWordModal();
   initLightbox();
+  initUploadModal();
   initSocket();
 
   document.getElementById('archive-list').addEventListener('click', e => {
@@ -1326,12 +1784,42 @@ async function init() {
   // Share controls live in both the locked view and archive cards — handle
   // them with one delegated listener.
   document.addEventListener('click', e => {
+    // AI artwork share
     const copyBtn = e.target.closest('[data-share-copy]');
     if (copyBtn) { copyShareLink(parseInt(copyBtn.dataset.shareCopy), copyBtn); return; }
     const xBtn = e.target.closest('[data-share-x]');
     if (xBtn) { shareToX(parseInt(xBtn.dataset.shareX), xBtn.dataset.shareTitle); return; }
     const fbBtn = e.target.closest('[data-share-fb]');
     if (fbBtn) { shareToFacebook(parseInt(fbBtn.dataset.shareFb)); return; }
+
+    // Human upload share
+    const uCopyBtn = e.target.closest('[data-upload-share-copy]');
+    if (uCopyBtn) { copyUploadShareLink(parseInt(uCopyBtn.dataset.uploadShareCopy), uCopyBtn); return; }
+    const uXBtn = e.target.closest('[data-upload-share-x]');
+    if (uXBtn) { shareUploadToX(parseInt(uXBtn.dataset.uploadShareX), uXBtn.dataset.shareTitle); return; }
+    const uFbBtn = e.target.closest('[data-upload-share-fb]');
+    if (uFbBtn) { shareUploadToFacebook(parseInt(uFbBtn.dataset.uploadShareFb)); return; }
+  });
+
+  // Validation queue: delegated vote button + dismiss button clicks
+  document.getElementById('validation-list').addEventListener('click', e => {
+    if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
+
+    const voteBtn = e.target.closest('[data-vote-btn]');
+    if (voteBtn) {
+      const uploadId = parseInt(voteBtn.dataset.uploadId);
+      const vote = voteBtn.dataset.voteBtn;
+      if (uploadId && vote) handleVote(uploadId, vote, voteBtn);
+      return;
+    }
+
+    const dismissBtn = e.target.closest('[data-dismiss-rejected]');
+    if (dismissBtn) {
+      const id = parseInt(dismissBtn.dataset.dismissRejected);
+      dismissRejected(id);
+      const notice = dismissBtn.closest('[data-rejected-notice]');
+      if (notice) notice.remove();
+    }
   });
 
   loadArchiveCols();
@@ -1362,6 +1850,7 @@ async function init() {
   renderHeader();
   renderMain();
   renderArchive();
+  renderValidationQueue();
 }
 
 init();
