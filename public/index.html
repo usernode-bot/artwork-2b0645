@@ -276,6 +276,12 @@
         </div>
         <p class="mt-4 text-sm text-zinc-400 italic" id="lv-prompt"></p>
         <p class="text-xs text-zinc-500 mt-1" id="lv-winner"></p>
+        <div class="mt-5 pt-4 border-t border-zinc-800">
+          <button id="lv-create-new"
+            class="inline-flex items-center gap-2 px-6 py-3 bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-sm font-semibold rounded-xl shadow-lg shadow-violet-900/40 hover:shadow-violet-700/50 transition-all hover:-translate-y-0.5">
+            🎨 Create New Artwork
+          </button>
+        </div>
       </div>
     </div>
 
@@ -676,6 +682,15 @@ function renderLockedView(data) {
 
   const shareEl = document.getElementById('lv-share');
   if (shareEl) shareEl.innerHTML = data.id ? shareButtonsHtml(data.id, data.name) : '';
+
+  const createNewBtn = document.getElementById('lv-create-new');
+  if (createNewBtn) {
+    createNewBtn.onclick = () => {
+      lockedSessionData = null;
+      renderMain();
+      document.getElementById('cta-create-artwork').click();
+    };
+  }
 }
 
 // Why the gift button should be disabled for a given artwork, or null if it's
