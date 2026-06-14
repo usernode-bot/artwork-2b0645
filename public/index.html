@@ -308,7 +308,11 @@
           class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
         <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 5</span>
       </div>
-      <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
+      <div class="flex items-center justify-between mb-3">
+        <p class="text-xs text-zinc-600">Separate words with spaces or commas</p>
+        <button id="modal-shuffle" type="button"
+          class="text-xs text-violet-400 hover:text-violet-300 transition-colors font-medium">🎲 Shuffle</button>
+      </div>
       <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
       <div class="flex gap-2">
         <button id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
@@ -471,6 +475,31 @@ function getWords(session) {
 
 function parseInputWords(str) {
   return String(str || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
+}
+
+// Curated, evocative single-token words (all lowercase, ≤30 chars, no spaces
+// or commas) used to pre-fill the New Session modal so a user can create an
+// artwork in one click. Drawing N distinct words from this bank always yields
+// a "fully filled" 5-word set that passes both client and server validation.
+const WORD_BANK = [
+  'ocean', 'stars', 'fire', 'ancient', 'glass', 'forest', 'storm', 'velvet',
+  'ember', 'crystal', 'shadow', 'aurora', 'nebula', 'desert', 'frost', 'bloom',
+  'thunder', 'silk', 'marble', 'twilight', 'obsidian', 'meadow', 'comet',
+  'lantern', 'mist', 'coral', 'canyon', 'willow', 'prism', 'tide', 'iron',
+  'dusk', 'cinder', 'gilded', 'monsoon', 'glacier', 'opal', 'feather',
+  'volcano', 'serene', 'cosmic', 'rust', 'jade', 'whisper', 'mirage', 'echo',
+  'lotus', 'tempest', 'amber', 'horizon', 'spectral', 'velour', 'quartz',
+  'eclipse', 'driftwood', 'lavender', 'thistle', 'radiant', 'fathom', 'wander'
+];
+
+// Return N distinct random words from WORD_BANK (sample without replacement).
+function randomWords(n) {
+  const pool = WORD_BANK.slice();
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, Math.min(n, pool.length));
 }
 
 function renderWordChips(container, words, editable) {
@@ -1229,6 +1258,7 @@ function initModal() {
   const wordsInp = document.getElementById('modal-words');
   const countEl  = document.getElementById('modal-word-count');
   const errEl    = document.getElementById('modal-error');
+  const shuffle  = document.getElementById('modal-shuffle');
 
   function updateWordCount() {
     const words = parseInputWords(wordsInp.value);
@@ -1243,7 +1273,9 @@ function initModal() {
   nameInp.addEventListener('input', updateWordCount);
 
   function openModal() {
-    nameInp.value = ''; wordsInp.value = '';
+    // Pre-fill the words with a random "fully filled" set so the user can
+    // create in one click; the name is the only thing left to supply.
+    nameInp.value = ''; wordsInp.value = randomWords(5).join(' ');
     updateWordCount();
     errEl.classList.add('hidden');
     modal.classList.remove('hidden');
@@ -1252,6 +1284,10 @@ function initModal() {
 
   cta.addEventListener('click', openModal);
   document.getElementById('header-create-btn').addEventListener('click', openModal);
+  shuffle.addEventListener('click', () => {
+    wordsInp.value = randomWords(5).join(' ');
+    updateWordCount();
+  });
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
