@@ -198,6 +198,7 @@
     <div class="flex items-center flex-shrink-0 gap-3">
       <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
       <span id="username-display" class="text-sm text-zinc-400"></span>
+      <button id="header-create-btn" class="btn btn-primary hidden">🎨 Create Artwork</button>
     </div>
   </header>
 
@@ -500,6 +501,7 @@ function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
   document.getElementById('generation-stub-banner').classList.toggle('hidden', !(me && me.generationStubbed));
+  document.getElementById('header-create-btn').classList.toggle('hidden', !!activeSession);
 }
 
 function renderMain() {
@@ -1240,13 +1242,16 @@ function initModal() {
   wordsInp.addEventListener('input', updateWordCount);
   nameInp.addEventListener('input', updateWordCount);
 
-  cta.addEventListener('click', () => {
+  function openModal() {
     nameInp.value = ''; wordsInp.value = '';
     updateWordCount();
     errEl.classList.add('hidden');
     modal.classList.remove('hidden');
     setTimeout(() => nameInp.focus(), 50);
-  });
+  }
+
+  cta.addEventListener('click', openModal);
+  document.getElementById('header-create-btn').addEventListener('click', openModal);
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
