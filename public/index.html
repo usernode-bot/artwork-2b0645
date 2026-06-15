@@ -198,6 +198,7 @@
     <div class="flex items-center flex-shrink-0 gap-3">
       <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
       <span id="username-display" class="text-sm text-zinc-400"></span>
+      <button id="new-session-btn" class="btn btn-primary" title="Start a new collaborative artwork">🎨 Create Artwork</button>
     </div>
   </header>
 
@@ -529,6 +530,16 @@ function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
   document.getElementById('generation-stub-banner').classList.toggle('hidden', !(me && me.generationStubbed));
+  // Only one session can be active platform-wide (server enforces a 409),
+  // so disable the create button while a session is active or in auction.
+  const newBtn = document.getElementById('new-session-btn');
+  if (newBtn) {
+    const busy = !!(activeSession && (activeSession.state === 'active' || activeSession.state === 'auction'));
+    newBtn.disabled = busy;
+    newBtn.title = busy
+      ? 'An artwork session is already in progress — finish it before starting a new one'
+      : 'Start a new collaborative artwork';
+  }
 }
 
 function renderMain() {
@@ -1249,6 +1260,7 @@ function initSocket() {
 // ─── Create Artwork Modal ─────────────────────────────────────────────────────
 function initModal() {
   const cta      = document.getElementById('cta-create-artwork');
+  const headerBtn = document.getElementById('new-session-btn');
   const modal    = document.getElementById('modal');
   const cancel   = document.getElementById('modal-cancel');
   const create   = document.getElementById('modal-create');
@@ -1270,7 +1282,9 @@ function initModal() {
   wordsInp.addEventListener('input', updateWordCount);
   nameInp.addEventListener('input', updateWordCount);
 
-  cta.addEventListener('click', () => {
+  // Open the Create Artwork modal. Shared by the landing CTA and the
+  // persistent header button so there's always a reachable entry point.
+  function openModal() {
     // Pre-fill the words with a random "fully filled" set so the user can
     // create in one click; the name is the only thing left to supply.
     nameInp.value = ''; wordsInp.value = randomWords(5).join(' ');
@@ -1278,7 +1292,9 @@ function initModal() {
     errEl.classList.add('hidden');
     modal.classList.remove('hidden');
     setTimeout(() => nameInp.focus(), 50);
-  });
+  }
+  if (cta) cta.addEventListener('click', openModal);
+  if (headerBtn) headerBtn.addEventListener('click', () => { if (!headerBtn.disabled) openModal(); });
   shuffle.addEventListener('click', () => {
     wordsInp.value = randomWords(5).join(' ');
     updateWordCount();
