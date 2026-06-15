@@ -201,8 +201,13 @@
     </div>
   </header>
 
+  <!-- View toggle (Workspace / Science Zone) -->
+  <nav class="px-4 pt-4">
+    <div id="view-toggle" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
+  </nav>
+
   <!-- Main -->
-  <div class="flex-1 p-4 flex flex-col gap-4">
+  <div id="workspace-main" class="flex-1 p-4 flex flex-col gap-4">
 
     <!-- Stub-mode warning: shown when no Replicate API key is configured, so
          generated images are random placeholders unrelated to the words. -->
@@ -282,7 +287,7 @@
   </div>
 
   <!-- Archive -->
-  <div class="px-4 pb-8">
+  <div id="archive-section" class="px-4 pb-8">
     <div class="flex items-center justify-between gap-4 mb-3">
       <h2 class="section-label">Session Archive</h2>
       <div id="archive-cols" class="flex items-center gap-1.5">
@@ -292,6 +297,24 @@
     </div>
     <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
+    </div>
+  </div>
+
+  <!-- Science Zone -->
+  <div id="science-view" class="hidden px-4 pb-8">
+    <div class="bg-gradient-to-r from-violet-950/50 to-zinc-900 border border-violet-900/40 rounded-2xl p-5 mb-5">
+      <h2 class="text-lg font-bold text-white flex items-center gap-2">🔬 Science Zone</h2>
+      <p class="text-sm text-zinc-400 mt-1">Completed artworks inspired by science — atoms, galaxies, DNA, gravity, and more.</p>
+    </div>
+    <div class="flex items-center justify-between gap-4 mb-3">
+      <h3 class="section-label">Science-themed artworks</h3>
+      <div id="science-cols" class="flex items-center gap-1.5">
+        <span class="text-xs text-zinc-500 mr-1 hidden sm:inline">Columns</span>
+        <div id="science-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
+      </div>
+    </div>
+    <div id="science-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <p class="text-zinc-600 text-sm col-span-full">No science-themed artworks yet.</p>
     </div>
   </div>
 
@@ -307,7 +330,11 @@
           class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors pr-16">
         <span id="modal-word-count" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-500 tabular-nums">0 / 5</span>
       </div>
-      <p class="text-xs text-zinc-600 mb-3">Separate words with spaces or commas</p>
+      <div class="flex items-center justify-between mb-3">
+        <p class="text-xs text-zinc-600">Separate words with spaces or commas</p>
+        <button id="modal-shuffle" type="button"
+          class="text-xs text-violet-400 hover:text-violet-300 transition-colors font-medium">🎲 Shuffle</button>
+      </div>
       <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
       <div class="flex gap-2">
         <button id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
@@ -391,6 +418,53 @@ let me = null, activeSession = null, auctionEnded = false, lockedSessionData = n
 let wordEditIndex = -1;
 let socket;
 
+// ─── View switch (Workspace / Science Zone) ───────────────────────────────────
+const VIEW_KEY = 'active-view';
+const VIEW_OPTIONS = ['workspace', 'science'];
+let currentView = 'workspace'; // in-memory fallback when localStorage is unavailable
+
+function loadView() {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    if (VIEW_OPTIONS.includes(v)) { currentView = v; return; }
+    if (v !== null) localStorage.removeItem(VIEW_KEY);
+  } catch (e) { /* storage unavailable — use in-memory default */ }
+  currentView = 'workspace';
+}
+
+function renderViewToggle() {
+  const group = document.getElementById('view-toggle');
+  if (!group) return;
+  const opts = [{ k: 'workspace', label: '🎨 Workspace' }, { k: 'science', label: '🔬 Science Zone' }];
+  group.innerHTML = opts.map(o => {
+    const active = o.k === currentView;
+    return `<button type="button" data-view="${o.k}"
+      class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${active
+        ? 'bg-violet-600 text-white'
+        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">${o.label}</button>`;
+  }).join('');
+}
+
+// Show the workspace surfaces or the Science Zone. The Science Zone hides the
+// whole workspace container (#workspace-main), which also hides the fixed
+// full-screen #session-view overlay nested inside it, plus the archive section.
+function applyView() {
+  const isScience = currentView === 'science';
+  document.getElementById('workspace-main')?.classList.toggle('hidden', isScience);
+  document.getElementById('archive-section')?.classList.toggle('hidden', isScience);
+  document.getElementById('science-view')?.classList.toggle('hidden', !isScience);
+  if (isScience) renderScienceZone();
+  else renderMain(); // restore the correct workspace sub-view (and session overlay)
+  renderViewToggle();
+}
+
+function setView(v) {
+  if (!VIEW_OPTIONS.includes(v)) v = 'workspace';
+  currentView = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch (e) { /* keep in-memory */ }
+  applyView();
+}
+
 // ─── Archive column preference ──────────────────────────────────────────────────
 const ARCHIVE_COLS_KEY = 'archive-columns';
 const ARCHIVE_COL_OPTIONS = ['auto', '1', '2', '3', '4', '5'];
@@ -422,20 +496,21 @@ function effectiveArchiveCols() {
   return n;
 }
 
+// The same column preference governs both the archive grid and the Science
+// Zone grid, so apply the computed template to whichever lists are present.
 function applyArchiveCols() {
-  const el = document.getElementById('archive-list');
-  if (el) {
-    const n = effectiveArchiveCols();
-    // 'auto' → clear inline style so the responsive grid-cols-* classes resume.
-    el.style.gridTemplateColumns = n === null ? '' : `repeat(${n}, minmax(0, 1fr))`;
-  }
+  const n = effectiveArchiveCols();
+  // 'auto' → clear inline style so the responsive grid-cols-* classes resume.
+  const tmpl = n === null ? '' : `repeat(${n}, minmax(0, 1fr))`;
+  ['archive-list', 'science-list'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.gridTemplateColumns = tmpl;
+  });
   renderArchiveColsControl();
 }
 
 function renderArchiveColsControl() {
-  const group = document.getElementById('archive-cols-group');
-  if (!group) return;
-  group.innerHTML = ARCHIVE_COL_OPTIONS.map(opt => {
+  const html = ARCHIVE_COL_OPTIONS.map(opt => {
     const active = opt === archiveCols;
     const label = opt === 'auto' ? 'Auto' : opt;
     return `<button type="button" data-archive-col="${opt}"
@@ -443,6 +518,10 @@ function renderArchiveColsControl() {
         ? 'bg-violet-600 text-white'
         : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">${label}</button>`;
   }).join('');
+  ['archive-cols-group', 'science-cols-group'].forEach(id => {
+    const group = document.getElementById(id);
+    if (group) group.innerHTML = html;
+  });
 }
 
 let _archiveResizeTimer;
@@ -470,6 +549,31 @@ function getWords(session) {
 
 function parseInputWords(str) {
   return String(str || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
+}
+
+// Curated, evocative single-token words (all lowercase, ≤30 chars, no spaces
+// or commas) used to pre-fill the New Session modal so a user can create an
+// artwork in one click. Drawing N distinct words from this bank always yields
+// a "fully filled" 5-word set that passes both client and server validation.
+const WORD_BANK = [
+  'ocean', 'stars', 'fire', 'ancient', 'glass', 'forest', 'storm', 'velvet',
+  'ember', 'crystal', 'shadow', 'aurora', 'nebula', 'desert', 'frost', 'bloom',
+  'thunder', 'silk', 'marble', 'twilight', 'obsidian', 'meadow', 'comet',
+  'lantern', 'mist', 'coral', 'canyon', 'willow', 'prism', 'tide', 'iron',
+  'dusk', 'cinder', 'gilded', 'monsoon', 'glacier', 'opal', 'feather',
+  'volcano', 'serene', 'cosmic', 'rust', 'jade', 'whisper', 'mirage', 'echo',
+  'lotus', 'tempest', 'amber', 'horizon', 'spectral', 'velour', 'quartz',
+  'eclipse', 'driftwood', 'lavender', 'thistle', 'radiant', 'fathom', 'wander'
+];
+
+// Return N distinct random words from WORD_BANK (sample without replacement).
+function randomWords(n) {
+  const pool = WORD_BANK.slice();
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, Math.min(n, pool.length));
 }
 
 function renderWordChips(container, words, editable) {
@@ -831,6 +935,53 @@ function filenameFromDisposition(header) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+// Markup for one completed-artwork card. Shared by the Session Archive and the
+// Science Zone so likes/gifts/share/download/lightbox behave identically in both.
+function artworkCardHtml(s) {
+  const words = (s.words || '').split(',').filter(Boolean);
+  const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
+  const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
+  const giftTotal = Number(s.gift_total || 0);
+  const ownerName = s.owner_username || s.winner_username || '';
+  return `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
+      <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
+        class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
+      <div class="p-4">
+        <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
+        <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
+        ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
+        <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+          <button type="button" data-like-session="${esc(s.id)}"
+            class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
+            <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
+            <span class="like-count tabular-nums">${s.like_count || 0}</span>
+          </button>
+          <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
+            data-gift-session="${esc(s.id)}"
+            data-owner-pubkey="${esc(s.owner_pubkey || '')}"
+            data-owner-name="${esc(ownerName)}"
+            ${giftReason ? 'disabled' : ''}
+            title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
+            <span>🎁</span>
+            <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
+          </button>
+          ${shareButtonsHtml(s.id, s.name)}
+          ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
+// Wire the per-card download buttons in a freshly-rendered grid. (Like/gift/
+// share/image clicks are handled by the delegated grid listener; see init.)
+function bindCardDownloads(el) {
+  el.querySelectorAll('button[data-download]').forEach(btn => {
+    btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
+  });
+}
+
 async function renderArchive() {
   try {
     const { sessions } = await api('GET', '/api/sessions/locked');
@@ -839,49 +990,30 @@ async function renderArchive() {
       el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
       applyArchiveCols(); return;
     }
-    el.innerHTML = sessions.map(s => {
-      const words = (s.words || '').split(',').filter(Boolean);
-      const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
-      return `
-        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-          <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-            class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
-          <div class="p-4">
-            <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
-            <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
-            ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
-            <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
-            ${(() => {
-              const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
-              const giftTotal = Number(s.gift_total || 0);
-              const ownerName = s.owner_username || s.winner_username || '';
-              return `<div class="flex flex-wrap items-center gap-2 mt-3">
-              <button type="button" data-like-session="${esc(s.id)}"
-                class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
-                <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
-                <span class="like-count tabular-nums">${s.like_count || 0}</span>
-              </button>
-              <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
-                data-gift-session="${esc(s.id)}"
-                data-owner-pubkey="${esc(s.owner_pubkey || '')}"
-                data-owner-name="${esc(ownerName)}"
-                ${giftReason ? 'disabled' : ''}
-                title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
-                <span>🎁</span>
-                <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
-              </button>
-              ${shareButtonsHtml(s.id, s.name)}
-              ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
-            </div>`;
-            })()}
-          </div>
-        </div>`;
-    }).join('');
-    el.querySelectorAll('button[data-download]').forEach(btn => {
-      btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
-    });
+    el.innerHTML = sessions.map(artworkCardHtml).join('');
+    bindCardDownloads(el);
     applyArchiveCols();
   } catch (err) { console.error('archive error:', err); }
+}
+
+async function renderScienceZone() {
+  const el = document.getElementById('science-list');
+  if (!el) return;
+  try {
+    const { sessions } = await api('GET', '/api/artworks/science');
+    if (!sessions.length) {
+      el.innerHTML = `<div class="col-span-full flex flex-col items-center justify-center py-16 text-center">
+        <div class="text-5xl mb-4">🔬</div>
+        <p class="text-zinc-400 text-sm max-w-sm">No science-themed artworks yet — create one with words like
+          <span class="text-violet-300">galaxy</span>, <span class="text-violet-300">atom</span>, or
+          <span class="text-violet-300">evolution</span>.</p>
+      </div>`;
+      applyArchiveCols(); return;
+    }
+    el.innerHTML = sessions.map(artworkCardHtml).join('');
+    bindCardDownloads(el);
+    applyArchiveCols();
+  } catch (err) { console.error('science zone error:', err); }
 }
 
 function esc(s) {
@@ -1214,6 +1346,9 @@ function initSocket() {
       document.getElementById('locked-view').classList.remove('hidden');
     }
     renderArchive();
+    // A newly-locked science artwork should appear in the zone immediately if
+    // the viewer is currently browsing it.
+    if (currentView === 'science') renderScienceZone();
   });
 }
 
@@ -1227,6 +1362,7 @@ function initModal() {
   const wordsInp = document.getElementById('modal-words');
   const countEl  = document.getElementById('modal-word-count');
   const errEl    = document.getElementById('modal-error');
+  const shuffle  = document.getElementById('modal-shuffle');
 
   function updateWordCount() {
     const words = parseInputWords(wordsInp.value);
@@ -1241,11 +1377,17 @@ function initModal() {
   nameInp.addEventListener('input', updateWordCount);
 
   cta.addEventListener('click', () => {
-    nameInp.value = ''; wordsInp.value = '';
+    // Pre-fill the words with a random "fully filled" set so the user can
+    // create in one click; the name is the only thing left to supply.
+    nameInp.value = ''; wordsInp.value = randomWords(5).join(' ');
     updateWordCount();
     errEl.classList.add('hidden');
     modal.classList.remove('hidden');
     setTimeout(() => nameInp.focus(), 50);
+  });
+  shuffle.addEventListener('click', () => {
+    wordsInp.value = randomWords(5).join(' ');
+    updateWordCount();
   });
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
@@ -1305,7 +1447,9 @@ async function init() {
   initLightbox();
   initSocket();
 
-  document.getElementById('archive-list').addEventListener('click', e => {
+  // One delegated handler for image/like/gift clicks, shared by the archive
+  // and Science Zone grids (both render identical cards via artworkCardHtml).
+  function onGridClick(e) {
     if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
     const sb = e.target.closest('.share-btn');
     if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
@@ -1319,6 +1463,16 @@ async function init() {
         ownerPubkey: giftBtn.dataset.ownerPubkey || ''
       });
     }
+  }
+  document.getElementById('archive-list').addEventListener('click', onGridClick);
+  document.getElementById('science-list').addEventListener('click', onGridClick);
+
+  // View toggle (Workspace / Science Zone)
+  loadView();
+  renderViewToggle();
+  document.getElementById('view-toggle').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-view]');
+    if (btn) setView(btn.getAttribute('data-view'));
   });
 
   initGiftModal();
@@ -1335,9 +1489,11 @@ async function init() {
   });
 
   loadArchiveCols();
-  document.getElementById('archive-cols-group').addEventListener('click', e => {
-    const btn = e.target.closest('button[data-archive-col]');
-    if (btn) setArchiveCols(btn.getAttribute('data-archive-col'));
+  ['archive-cols-group', 'science-cols-group'].forEach(id => {
+    document.getElementById(id)?.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-archive-col]');
+      if (btn) setArchiveCols(btn.getAttribute('data-archive-col'));
+    });
   });
   window.addEventListener('resize', onArchiveResize);
   applyArchiveCols();
@@ -1362,6 +1518,7 @@ async function init() {
   renderHeader();
   renderMain();
   renderArchive();
+  applyView(); // honor the persisted view (renders the Science Zone if selected)
 }
 
 init();

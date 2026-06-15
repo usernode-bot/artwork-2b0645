@@ -13,80 +13,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
-// --- Replicate text-to-image generation -----------------------------------
-// The artwork image is generated from the session's 10 words via Replicate's
-// HTTP predictions API (no SDK — plain fetch). REPLICATE_API_KEY is declared in
-// dapp.json as optional; when it's absent (e.g. local dev) we fall back to the
-// picsum stub below so the app still works without a key.
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
-// Pinned model version so output style / input schema don't drift under us.
-// stability-ai/sdxl — a fast, inexpensive text-to-image model.
-const REPLICATE_MODEL_VERSION = '7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bda';
-// Square edge requested from the model. 1024 front-loads enough resolution that
-// the OG card (1200) and download proxy (2048) don't need provider-side upscaling.
-const GENERATED_IMAGE_SIZE = 1024;
-// Overall budget for create + poll before we give up and let the winner retry.
-const REPLICATE_TIMEOUT_MS = 60000;
-const REPLICATE_POLL_INTERVAL_MS = 1500;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Generate an image from `prompt` via Replicate and return its hosted URL.
-// Throws on auth/API error, failed prediction, or timeout — callers treat any
-// throw as "generation failed, leave the session recoverable".
-async function generateImageWithReplicate(prompt) {
-  const startedAt = Date.now();
-  const createRes = await fetch('https://api.replicate.com/v1/predictions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${REPLICATE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      version: REPLICATE_MODEL_VERSION,
-      input: {
-        prompt,
-        width: GENERATED_IMAGE_SIZE,
-        height: GENERATED_IMAGE_SIZE,
-      },
-    }),
-  });
-
-  if (!createRes.ok) {
-    const detail = await createRes.text().catch(() => '');
-    throw new Error(`Replicate create failed (${createRes.status}): ${detail.slice(0, 300)}`);
-  }
-
-  let prediction = await createRes.json();
-  const pollUrl = prediction?.urls?.get;
-
-  while (prediction.status !== 'succeeded') {
-    if (prediction.status === 'failed' || prediction.status === 'canceled') {
-      throw new Error(`Replicate prediction ${prediction.status}: ${prediction.error || 'no detail'}`);
-    }
-    if (Date.now() - startedAt > REPLICATE_TIMEOUT_MS) {
-      throw new Error('Replicate prediction timed out');
-    }
-    if (!pollUrl) throw new Error('Replicate response missing poll URL');
-    await sleep(REPLICATE_POLL_INTERVAL_MS);
-    const pollRes = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${REPLICATE_API_KEY}` },
-    });
-    if (!pollRes.ok) {
-      const detail = await pollRes.text().catch(() => '');
-      throw new Error(`Replicate poll failed (${pollRes.status}): ${detail.slice(0, 300)}`);
-    }
-    prediction = await pollRes.json();
-  }
-
-  // SDXL returns an array of output URLs; some models return a bare string.
-  const output = prediction.output;
-  const imageUrl = Array.isArray(output) ? output[0] : output;
-  if (!imageUrl || typeof imageUrl !== 'string') {
-    throw new Error('Replicate succeeded but returned no image URL');
-  }
-  return imageUrl;
-}
 
 const PUBLIC_API_PATHS = new Set(['/health']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
@@ -232,6 +159,45 @@ async function generateImageWithReplicate(prompt) {
   }
 }
 
+// ─── Science Zone classification ────────────────────────────────────────────────
+// Curated (intentionally NOT exhaustive) vocabulary of science terms. A locked
+// artwork qualifies for the Science Zone when at least one of its 5 inspiration
+// words matches an entry here. Classification is computed at query time from the
+// existing `sessions.words` string — no schema change, and all past artworks are
+// covered retroactively. Broadening "what counts as science" is a one-line edit.
+const SCIENCE_WORDS = new Set([
+  // physics
+  'atom', 'molecule', 'quantum', 'gravity', 'electron', 'proton', 'neutron',
+  'photon', 'particle', 'energy', 'force', 'magnet', 'magnetism', 'plasma',
+  'laser', 'radiation', 'velocity', 'momentum', 'entropy', 'relativity',
+  // chemistry
+  'chemistry', 'chemical', 'element', 'compound', 'reaction', 'acid', 'base',
+  'crystal', 'isotope', 'catalyst', 'enzyme', 'protein', 'polymer',
+  // biology
+  'biology', 'cell', 'dna', 'rna', 'gene', 'genome', 'neuron', 'brain',
+  'evolution', 'fossil', 'bacteria', 'virus', 'microbe', 'organism', 'mitochondria',
+  'photosynthesis', 'ecosystem', 'species', 'chromosome',
+  // astronomy / space
+  'galaxy', 'planet', 'star', 'nebula', 'cosmos', 'cosmic', 'comet', 'asteroid',
+  'meteor', 'orbit', 'gravity', 'blackhole', 'supernova', 'telescope', 'satellite',
+  'space', 'universe', 'astronomy', 'astronaut', 'rocket', 'lunar', 'solar',
+  // earth / general
+  'geology', 'volcano', 'mineral', 'electricity', 'circuit', 'microscope',
+  'experiment', 'laboratory', 'science', 'scientific', 'physics', 'mathematics',
+  'equation', 'algorithm', 'data', 'robot', 'spectrum', 'frequency'
+]);
+
+// True if any of the artwork's comma-joined words is a science term. Matching is
+// case-insensitive and tolerates a single trailing 's' plural (e.g. "atoms").
+function isScienceArtwork(wordsStr) {
+  const words = String(wordsStr || '').split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+  return words.some(w => {
+    if (SCIENCE_WORDS.has(w)) return true;
+    if (w.endsWith('s') && SCIENCE_WORDS.has(w.slice(0, -1))) return true;
+    return false;
+  });
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -290,6 +256,32 @@ app.get('/api/sessions/locked', async (req, res) => {
       LIMIT 50
     `, [req.user.id]);
     res.json({ sessions: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Science Zone gallery: same shape as /api/sessions/locked, filtered to
+// science-themed artworks. We pull a generous window of recent locked rows,
+// filter by word in JS (keeping the vocabulary in one place — a comma-string
+// SQL match would be brittle), then cap the response at 50 like the archive.
+app.get('/api/artworks/science', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
+        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
+      FROM sessions s
+      LEFT JOIN auctions a ON a.session_id = s.id
+      LEFT JOIN generated_artworks g ON g.session_id = s.id
+      WHERE s.state = 'locked'
+      ORDER BY s.locked_at DESC
+      LIMIT 300
+    `, [req.user.id]);
+    const science = rows.filter(r => isScienceArtwork(r.words)).slice(0, 50);
+    res.json({ sessions: science });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1114,6 +1106,28 @@ async function start() {
       UNIQUE (session_id, user_id)
     )
   `);
+
+  // Staging seed: guarantee the Science Zone has at least one science-themed
+  // artwork to browse in PR previews (cloned prod data may not contain any).
+  // No-op in production; idempotent via the fixed demo name.
+  if (IS_STAGING) {
+    const SEED_NAME = '[demo] Quantum Galaxy';
+    const SEED_WORDS = 'galaxy,quantum,nebula,dna,gravity';
+    const { rows: existing } = await pool.query('SELECT id FROM sessions WHERE name = $1 LIMIT 1', [SEED_NAME]);
+    if (!existing.length) {
+      const { rows: sRows } = await pool.query(
+        `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, locked_at)
+         VALUES ($1, 0, 'demo_scientist', 'locked', $2, NOW()) RETURNING id`,
+        [SEED_NAME, SEED_WORDS]
+      );
+      const sid = sRows[0].id;
+      await pool.query(
+        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt)
+         VALUES ($1, 0, 'demo_scientist', $2, $3)`,
+        [sid, `https://picsum.photos/seed/sci-${sid}/512/512`, `A beautiful artwork inspired by: ${SEED_WORDS}`]
+      );
+    }
+  }
 
   // Resume active auction if server restarted
   const { rows: activeAuctions } = await pool.query(`
