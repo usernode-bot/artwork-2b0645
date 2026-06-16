@@ -226,6 +226,45 @@ async function resolveUpload(uploadId) {
   }
 }
 
+// ─── Science Zone classification ────────────────────────────────────────────────
+// Curated (intentionally NOT exhaustive) vocabulary of science terms. A locked
+// artwork qualifies for the Science Zone when at least one of its 5 inspiration
+// words matches an entry here. Classification is computed at query time from the
+// existing `sessions.words` string — no schema change, and all past artworks are
+// covered retroactively. Broadening "what counts as science" is a one-line edit.
+const SCIENCE_WORDS = new Set([
+  // physics
+  'atom', 'molecule', 'quantum', 'gravity', 'electron', 'proton', 'neutron',
+  'photon', 'particle', 'energy', 'force', 'magnet', 'magnetism', 'plasma',
+  'laser', 'radiation', 'velocity', 'momentum', 'entropy', 'relativity',
+  // chemistry
+  'chemistry', 'chemical', 'element', 'compound', 'reaction', 'acid', 'base',
+  'crystal', 'isotope', 'catalyst', 'enzyme', 'protein', 'polymer',
+  // biology
+  'biology', 'cell', 'dna', 'rna', 'gene', 'genome', 'neuron', 'brain',
+  'evolution', 'fossil', 'bacteria', 'virus', 'microbe', 'organism', 'mitochondria',
+  'photosynthesis', 'ecosystem', 'species', 'chromosome',
+  // astronomy / space
+  'galaxy', 'planet', 'star', 'nebula', 'cosmos', 'cosmic', 'comet', 'asteroid',
+  'meteor', 'orbit', 'gravity', 'blackhole', 'supernova', 'telescope', 'satellite',
+  'space', 'universe', 'astronomy', 'astronaut', 'rocket', 'lunar', 'solar',
+  // earth / general
+  'geology', 'volcano', 'mineral', 'electricity', 'circuit', 'microscope',
+  'experiment', 'laboratory', 'science', 'scientific', 'physics', 'mathematics',
+  'equation', 'algorithm', 'data', 'robot', 'spectrum', 'frequency'
+]);
+
+// True if any of the artwork's comma-joined words is a science term. Matching is
+// case-insensitive and tolerates a single trailing 's' plural (e.g. "atoms").
+function isScienceArtwork(wordsStr) {
+  const words = String(wordsStr || '').split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+  return words.some(w => {
+    if (SCIENCE_WORDS.has(w)) return true;
+    if (w.endsWith('s') && SCIENCE_WORDS.has(w.slice(0, -1))) return true;
+    return false;
+  });
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -262,7 +301,62 @@ app.get('/api/session/active', async (_req, res) => {
   }
 });
 
+// Archive list. Despite the `/locked` path (kept for backwards compat), this
+// endpoint supports filtering across all session states via query params:
+//   q      — case-insensitive substring match on name OR creator_username
+//   status — 'completed' (default, state=locked) | 'in_progress' (active/auction) | 'all'
+//   sort   — 'newest' (default, created_at DESC) | 'oldest' (created_at ASC)
 app.get('/api/sessions/locked', async (req, res) => {
+  try {
+    // $1 is always req.user.id (used by the liked_by_me subquery). Additional
+    // bound params (e.g. the search term) are appended dynamically.
+    const params = [req.user.id];
+    const where = [];
+
+    const status = String(req.query.status || 'completed');
+    if (status === 'in_progress') {
+      where.push(`s.state IN ('active', 'auction')`);
+    } else if (status === 'all') {
+      /* no state restriction */
+    } else {
+      // 'completed' (default) and any unknown value fall back to locked only.
+      where.push(`s.state = 'locked'`);
+    }
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      params.push(`%${q}%`);
+      const p = `$${params.length}`;
+      where.push(`(s.name ILIKE ${p} OR s.creator_username ILIKE ${p})`);
+    }
+
+    const order = String(req.query.sort) === 'oldest' ? 'ASC' : 'DESC';
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const { rows } = await pool.query(`
+      SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
+        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
+      FROM sessions s
+      LEFT JOIN auctions a ON a.session_id = s.id
+      LEFT JOIN generated_artworks g ON g.session_id = s.id
+      ${whereSql}
+      ORDER BY s.created_at ${order}
+      LIMIT 50
+    `, params);
+    res.json({ sessions: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Science Zone gallery: same shape as /api/sessions/locked, filtered to
+// science-themed artworks. We pull a generous window of recent locked rows,
+// filter by word in JS (keeping the vocabulary in one place — a comma-string
+// SQL match would be brittle), then cap the response at 50 like the archive.
+app.get('/api/artworks/science', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
@@ -275,9 +369,10 @@ app.get('/api/sessions/locked', async (req, res) => {
       LEFT JOIN generated_artworks g ON g.session_id = s.id
       WHERE s.state = 'locked'
       ORDER BY s.locked_at DESC
-      LIMIT 50
+      LIMIT 300
     `, [req.user.id]);
-    res.json({ sessions: rows });
+    const science = rows.filter(r => isScienceArtwork(r.words)).slice(0, 50);
+    res.json({ sessions: science });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1441,6 +1536,26 @@ async function start() {
              (1002, -3, 'staging-vote-user-3', 'no')
       ON CONFLICT (upload_id, user_id) DO NOTHING
     `);
+
+    // Staging seed: guarantee the Science Zone has at least one science-themed
+    // artwork to browse in PR previews (cloned prod data may not contain any).
+    // No-op in production; idempotent via the fixed demo name.
+    const SEED_NAME = '[demo] Quantum Galaxy';
+    const SEED_WORDS = 'galaxy,quantum,nebula,dna,gravity';
+    const { rows: existing } = await pool.query('SELECT id FROM sessions WHERE name = $1 LIMIT 1', [SEED_NAME]);
+    if (!existing.length) {
+      const { rows: sRows } = await pool.query(
+        `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, locked_at)
+         VALUES ($1, 0, 'demo_scientist', 'locked', $2, NOW()) RETURNING id`,
+        [SEED_NAME, SEED_WORDS]
+      );
+      const sid = sRows[0].id;
+      await pool.query(
+        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt)
+         VALUES ($1, 0, 'demo_scientist', $2, $3)`,
+        [sid, `https://picsum.photos/seed/sci-${sid}/512/512`, `A beautiful artwork inspired by: ${SEED_WORDS}`]
+      );
+    }
   }
 
   // Resume active auction if server restarted
