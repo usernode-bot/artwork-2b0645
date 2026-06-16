@@ -164,6 +164,14 @@
       cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
     .pill:not(:disabled):hover { border-color: #52525b; color: #e4e4e7; }
+    /* Provenance badge (informational, not a button): AI = violet, human = amber */
+    .src-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 9999px; font-size: 0.7rem; font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .src-badge.src-ai { background: rgba(124,58,237,.15); border-color: rgba(124,58,237,.4); color: #c4b5fd; }
+    .src-badge.src-human { background: rgba(245,158,11,.15); border-color: rgba(245,158,11,.4); color: #fcd34d; }
 
     /* ── Bottom nav ── */
     .tab-btn { color: #71717a; transition: color 0.15s; background: none; border: none; cursor: pointer; }
