@@ -263,8 +263,38 @@ app.get('/api/session/active', async (_req, res) => {
   }
 });
 
+// Archive list. Despite the `/locked` path (kept for backwards compat), this
+// endpoint supports filtering across all session states via query params:
+//   q      — case-insensitive substring match on name OR creator_username
+//   status — 'completed' (default, state=locked) | 'in_progress' (active/auction) | 'all'
+//   sort   — 'newest' (default, created_at DESC) | 'oldest' (created_at ASC)
 app.get('/api/sessions/locked', async (req, res) => {
   try {
+    // $1 is always req.user.id (used by the liked_by_me subquery). Additional
+    // bound params (e.g. the search term) are appended dynamically.
+    const params = [req.user.id];
+    const where = [];
+
+    const status = String(req.query.status || 'completed');
+    if (status === 'in_progress') {
+      where.push(`s.state IN ('active', 'auction')`);
+    } else if (status === 'all') {
+      /* no state restriction */
+    } else {
+      // 'completed' (default) and any unknown value fall back to locked only.
+      where.push(`s.state = 'locked'`);
+    }
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      params.push(`%${q}%`);
+      const p = `$${params.length}`;
+      where.push(`(s.name ILIKE ${p} OR s.creator_username ILIKE ${p})`);
+    }
+
+    const order = String(req.query.sort) === 'oldest' ? 'ASC' : 'DESC';
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
         g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
@@ -274,10 +304,10 @@ app.get('/api/sessions/locked', async (req, res) => {
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
-      WHERE s.state = 'locked'
-      ORDER BY s.locked_at DESC
+      ${whereSql}
+      ORDER BY s.created_at ${order}
       LIMIT 50
-    `, [req.user.id]);
+    `, params);
     res.json({ sessions: rows });
   } catch (err) {
     res.status(500).json({ error: err.message });

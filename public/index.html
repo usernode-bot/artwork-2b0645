@@ -295,6 +295,22 @@
         <div id="archive-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
       </div>
     </div>
+    <!-- Search / filter / sort controls -->
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <input id="archive-search" type="search" placeholder="Search by name or creator…"
+        class="flex-1 min-w-[12rem] bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-violet-600">
+      <select id="archive-status"
+        class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
+        <option value="completed">Completed</option>
+        <option value="in_progress">In progress</option>
+        <option value="all">All</option>
+      </select>
+      <select id="archive-sort"
+        class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
+        <option value="newest">Newest first</option>
+        <option value="oldest">Oldest first</option>
+      </select>
+    </div>
     <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
     </div>
@@ -935,6 +951,19 @@ function filenameFromDisposition(header) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+// Current archive control state. Read fresh from the DOM on each render so
+// the values always reflect what the user has selected.
+function archiveQuery() {
+  const q = (document.getElementById('archive-search')?.value || '').trim();
+  const status = document.getElementById('archive-status')?.value || 'completed';
+  const sort = document.getElementById('archive-sort')?.value || 'newest';
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  params.set('status', status);
+  params.set('sort', sort);
+  return { qs: params.toString(), q, status, sort };
+}
+
 // Markup for one completed-artwork card. Shared by the Session Archive and the
 // Science Zone so likes/gifts/share/download/lightbox behave identically in both.
 function artworkCardHtml(s) {
@@ -984,10 +1013,15 @@ function bindCardDownloads(el) {
 
 async function renderArchive() {
   try {
-    const { sessions } = await api('GET', '/api/sessions/locked');
+    const { qs, q, status } = archiveQuery();
+    const { sessions } = await api('GET', `/api/sessions/locked?${qs}`);
     const el = document.getElementById('archive-list');
     if (!sessions.length) {
-      el.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>';
+      // Distinguish "nothing matches the active filters" from a genuinely
+      // empty archive (default view, no search and showing completed).
+      const filtered = q || status !== 'completed';
+      const msg = filtered ? 'No artworks match your search.' : 'No completed sessions yet.';
+      el.innerHTML = `<p class="text-zinc-600 text-sm col-span-full">${msg}</p>`;
       applyArchiveCols(); return;
     }
     el.innerHTML = sessions.map(artworkCardHtml).join('');
@@ -1497,6 +1531,16 @@ async function init() {
   });
   window.addEventListener('resize', onArchiveResize);
   applyArchiveCols();
+
+  // Archive search / filter / sort controls. Search input is debounced so we
+  // don't refetch on every keystroke; the dropdowns refetch immediately.
+  let _archiveSearchTimer;
+  document.getElementById('archive-search')?.addEventListener('input', () => {
+    clearTimeout(_archiveSearchTimer);
+    _archiveSearchTimer = setTimeout(renderArchive, 300);
+  });
+  document.getElementById('archive-status')?.addEventListener('change', renderArchive);
+  document.getElementById('archive-sort')?.addEventListener('change', renderArchive);
 
   try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
 
