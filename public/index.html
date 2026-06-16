@@ -64,38 +64,34 @@
   })();
   </script>
 
-  <title>Artwork Workspace</title>
+  <title>Artwork</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' }</script>
   <script src="/socket.io/socket.io.js"></script>
-  <!-- Usernode bridge: centrally hosted, never vendored. Provides the on-chain
-       wallet API (getNodeAddress / sendTransaction) used by the gift feature.
-       Served with no-cache so fixes propagate fleet-wide on the next load. -->
   <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    /* ── Design tokens ───────────────────────────────────────────────── */
     :root {
-      --header-h: 52px;          /* single source of truth for header height */
-      --accent: #7c3aed;         /* violet-600 — the one primary accent */
-      --accent-hover: #8b5cf6;   /* violet-500 */
+      --header-h: 44px;
+      --nav-h: 56px;
+      --accent: #7c3aed;
+      --accent-hover: #8b5cf6;
     }
     html { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
     body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
-    /* Shared section label (uppercase tracked caption) */
     .section-label {
       font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em;
       text-transform: uppercase; color: #71717a;
     }
 
-    /* ── Session view (responsive two-column → stacked) ──────────────── */
+    /* ── Session overlay ── */
     #session-view {
       position: fixed;
       top: var(--header-h); left: 0; right: 0; bottom: 0;
-      z-index: 15;
+      z-index: 40;
       background: #09090b;
       flex-direction: column;
     }
@@ -106,7 +102,7 @@
       justify-content: center;
       position: relative;
       min-height: 0;
-      padding: 24px 264px 24px 24px;   /* reserve room for floating panel */
+      padding: 24px 264px 24px 24px;
     }
     #words-panel { max-width: 640px; width: 100%; }
     #auction-panel {
@@ -116,8 +112,6 @@
       z-index: 10;
       overflow-y: auto;
     }
-    /* On narrow viewports, stop floating the auction panel: stack it below
-       the words so nothing overlaps. */
     @media (max-width: 720px) {
       #words-stage {
         flex-direction: column;
@@ -134,32 +128,24 @@
         top: auto; right: auto; bottom: auto;
       }
     }
-
     #countdown-ring { transition: stroke-dashoffset 1s linear; }
 
-    /* ── Word chips (one definition, two sizes) ──────────────────────── */
+    /* ── Word chips ── */
     .word-chip, .chip-sm {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      border-radius: 9999px;
-      font-weight: 500;
+      display: inline-flex; align-items: center; gap: 4px;
+      border-radius: 9999px; font-weight: 500;
       background: rgba(124,58,237,0.15);
       border: 1px solid rgba(124,58,237,0.35);
-      color: #c4b5fd;
-      user-select: none;
+      color: #c4b5fd; user-select: none;
     }
     .word-chip { padding: 6px 14px; font-size: 0.875rem; cursor: default; transition: background 0.12s, border-color 0.12s; }
     .chip-sm   { padding: 2px 9px; font-size: 0.72rem; }
     .word-chip.editable { cursor: pointer; }
-    .word-chip.editable:hover {
-      background: rgba(124,58,237,0.28);
-      border-color: rgba(124,58,237,0.6);
-    }
+    .word-chip.editable:hover { background: rgba(124,58,237,0.28); border-color: rgba(124,58,237,0.6); }
     .word-chip .edit-icon { opacity: 0; font-size: 0.7rem; transition: opacity 0.12s; }
     .word-chip.editable:hover .edit-icon { opacity: 1; }
 
-    /* ── Buttons (unified pill styles) ───────────────────────────────── */
+    /* ── Buttons ── */
     .btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
       border-radius: 10px; font-weight: 600; font-size: 0.875rem;
@@ -171,7 +157,6 @@
     .btn-primary:not(:disabled):hover { background: var(--accent-hover); }
     .btn-secondary { background: #27272a; color: #e4e4e7; border-color: #3f3f46; }
     .btn-secondary:not(:disabled):hover { background: #3f3f46; }
-    /* Small icon pill used in archive cards (like / download / share) */
     .pill {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 5px 10px; border-radius: 9999px; font-size: 0.72rem; font-weight: 500;
@@ -180,161 +165,274 @@
     }
     .pill:not(:disabled):hover { border-color: #52525b; color: #e4e4e7; }
 
+    /* ── Bottom nav ── */
+    .tab-btn { color: #71717a; transition: color 0.15s; background: none; border: none; cursor: pointer; }
+    .tab-btn.active { color: #a78bfa; }
+    .upload-tab-btn {
+      background: var(--accent); border-radius: 14px;
+      width: 48px; height: 34px; display: flex; align-items: center; justify-content: center;
+      border: none; cursor: pointer; transition: background 0.12s;
+      color: #fff; flex-shrink: 0;
+    }
+    .upload-tab-btn:hover { background: var(--accent-hover); }
+
+    /* ── Stories ── */
+    #stories-container {
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      scroll-snap-type: x mandatory;
+      scrollbar-width: none;
+    }
+    #stories-container::-webkit-scrollbar { display: none; }
+    .story-btn {
+      display: inline-flex; flex-direction: column; align-items: center;
+      gap: 5px; padding: 4px 2px; background: none; border: none;
+      cursor: pointer; scroll-snap-align: start;
+    }
+    .story-ring {
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, #7c3aed, #ec4899);
+      border-radius: 50%; padding: 2.5px; flex-shrink: 0;
+    }
+    .story-ring.unseen { background: linear-gradient(135deg, #7c3aed, #ec4899); }
+    .story-avatar {
+      width: 100%; height: 100%; border-radius: 50%; object-fit: cover;
+      background: #27272a; border: 2.5px solid #09090b; display: block;
+    }
+    .story-name {
+      font-size: 0.65rem; font-weight: 500; color: #a1a1aa;
+      max-width: 68px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; text-align: center;
+    }
+
+    /* ── Feed grid cells ── */
+    .feed-cell {
+      position: relative; display: block; width: 100%;
+      background: #18181b; border: none; padding: 0; cursor: pointer;
+    }
+    .feed-cell img { display: block; width: 100%; }
+    .cell-overlay {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, transparent 100%);
+      padding: 8px 5px 3px;
+      display: flex; gap: 8px;
+      font-size: 0.65rem; font-weight: 600; color: white;
+      pointer-events: none;
+    }
+
+    /* ── Notification rows ── */
+    .notif-row {
+      display: flex; align-items: flex-start; gap: 12px;
+      width: 100%; padding: 12px 16px; text-align: left;
+      background: transparent; border: none; cursor: pointer;
+      transition: background 0.1s;
+    }
+    .notif-row:hover { background: rgba(255,255,255,0.03); }
+    .notif-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+    .notif-body { font-size: 0.85rem; color: #d4d4d8; line-height: 1.4; }
+    .notif-user { font-weight: 600; color: #a78bfa; }
+    .notif-time { font-size: 0.72rem; color: #71717a; margin-top: 2px; }
+
+    /* ── Scrollbar ── */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #18181b; }
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #52525b; }
 
+    /* ── Lightbox ── */
     #lightbox { opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
     #lightbox.lb-open { opacity: 1; pointer-events: auto; }
     #lightbox-img.lb-zoomed { transform: scale(2); cursor: zoom-out !important; }
   </style>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col">
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
 
   <!-- Header -->
   <header id="app-header" class="sticky top-0 z-20 bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-4 flex items-center justify-between gap-4" style="height:var(--header-h);flex-shrink:0">
-    <h1 class="text-base font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork Workspace</h1>
+    <h1 class="text-base font-bold tracking-tight whitespace-nowrap flex-shrink-0">🎨 Artwork</h1>
     <div class="flex items-center flex-shrink-0 gap-3">
       <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
-      <span id="username-display" class="text-sm text-zinc-400"></span>
+      <span id="username-display" class="text-sm text-zinc-400 hidden sm:inline"></span>
     </div>
   </header>
 
-  <!-- View toggle (Workspace / Science Zone) -->
-  <nav class="px-4 pt-4">
-    <div id="view-toggle" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
+  <!-- Main scrollable area (padded for bottom nav) -->
+  <main id="app-main" style="padding-bottom: calc(env(safe-area-inset-bottom) + var(--nav-h))">
+
+    <!-- ══ HOME TAB ══ -->
+    <div id="tab-home" class="tab-pane" data-tab="home">
+
+      <!-- Generation stub warning -->
+      <div id="generation-stub-banner" class="hidden mx-4 mt-3 text-sm text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-4 py-3">
+        ⚠️ <span class="font-semibold">Image generation isn't configured.</span>
+        Artwork images are random placeholders until a <span class="font-medium">Replicate API key</span> is set in Settings → Secrets.
+      </div>
+
+      <!-- Live session banner -->
+      <div id="live-banner" class="hidden px-4 pt-3"></div>
+
+      <!-- Locked artwork banner (just generated in this session) -->
+      <div id="locked-banner" class="hidden px-4 pt-3"></div>
+
+      <!-- Stories row -->
+      <div id="stories-container" class="px-3 pt-3 pb-1">
+        <div id="stories-row" class="inline-flex gap-3 px-1"></div>
+      </div>
+
+      <!-- Feed grid -->
+      <div id="feed-grid" class="grid grid-cols-3 gap-0.5 mt-1">
+        <p class="col-span-3 text-zinc-600 text-sm text-center py-16">Loading…</p>
+      </div>
+
+    </div>
+
+    <!-- ══ SEARCH TAB ══ -->
+    <div id="tab-search" class="tab-pane hidden" data-tab="search">
+      <div class="p-4 space-y-3">
+        <input id="search-input" type="search" placeholder="Search by name or creator…"
+          class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-violet-600">
+        <div id="filter-chips" class="flex flex-wrap gap-2">
+          <button type="button" class="filter-chip pill active-chip" data-filter="completed">Completed</button>
+          <button type="button" class="filter-chip pill" data-filter="in_progress">In Progress</button>
+          <button type="button" class="filter-chip pill" data-filter="all">All</button>
+          <button type="button" class="filter-chip pill" data-filter="science">🔬 Science</button>
+        </div>
+        <select id="search-sort"
+          class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </div>
+      <div id="search-results" class="grid grid-cols-3 gap-0.5">
+        <p class="col-span-3 text-zinc-600 text-sm text-center py-16">Select a filter to search.</p>
+      </div>
+    </div>
+
+    <!-- ══ NOTIFICATIONS TAB ══ -->
+    <div id="tab-notifications" class="tab-pane hidden" data-tab="notifications">
+      <div class="px-4 pt-4 pb-2">
+        <h2 class="text-base font-semibold text-white">Notifications</h2>
+      </div>
+      <div id="notifications-list" class="divide-y divide-zinc-800/60">
+        <p class="text-zinc-600 text-sm text-center py-16">Loading…</p>
+      </div>
+    </div>
+
+    <!-- ══ PROFILE TAB ══ -->
+    <div id="tab-profile" class="tab-pane hidden" data-tab="profile">
+      <div id="profile-header" class="p-4 border-b border-zinc-800">
+        <div class="flex items-center gap-4">
+          <div class="w-16 h-16 rounded-full bg-violet-900/50 border border-violet-700/50 flex items-center justify-center text-2xl flex-shrink-0">👤</div>
+          <div>
+            <p id="profile-username" class="font-bold text-white text-base"></p>
+            <div class="flex gap-4 mt-1">
+              <div class="text-center"><p id="profile-artwork-count" class="font-bold text-white text-lg leading-tight">—</p><p class="text-xs text-zinc-500">artworks</p></div>
+              <div class="text-center"><p id="profile-like-count" class="font-bold text-white text-lg leading-tight">—</p><p class="text-xs text-zinc-500">total likes</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="profile-grid" class="grid grid-cols-3 gap-0.5 mt-0.5">
+        <p class="col-span-3 text-zinc-600 text-sm text-center py-16">Loading…</p>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ══ Full-screen session overlay (active / auction) ══ -->
+  <div id="session-view" style="display:none">
+    <div class="flex-shrink-0 flex items-center gap-2 px-3 bg-zinc-900 border-b border-zinc-800" style="height:42px">
+      <button id="sv-back" class="text-zinc-400 hover:text-zinc-200 transition-colors text-sm font-medium flex items-center gap-1 mr-1 flex-shrink-0">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        Back
+      </button>
+      <span class="font-semibold text-white text-sm truncate max-w-xs" id="sv-name"></span>
+      <span class="text-zinc-500 text-xs flex-shrink-0">by <span class="text-zinc-300" id="sv-creator"></span></span>
+      <span id="sv-badge" class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"></span>
+    </div>
+    <div id="words-stage">
+      <div id="words-panel">
+        <p class="section-label mb-4">5 Words</p>
+        <div id="word-chips" class="flex flex-wrap gap-2"></div>
+        <p id="words-hint" class="text-xs text-zinc-500 mt-4">Click a word to change it (costs 1 credit + bid)</p>
+      </div>
+      <div id="auction-panel" class="bg-zinc-900/96 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl p-4 flex flex-col gap-3"></div>
+    </div>
+  </div>
+
+  <!-- ══ Bottom navigation bar ══ -->
+  <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 z-30 bg-zinc-900/95 backdrop-blur border-t border-zinc-800"
+    style="height: calc(env(safe-area-inset-bottom) + var(--nav-h)); padding-bottom: env(safe-area-inset-bottom)">
+    <div class="flex items-stretch h-14 max-w-lg mx-auto">
+
+      <!-- Home -->
+      <button class="tab-btn flex-1 flex flex-col items-center justify-center gap-0.5 active" data-tab="home">
+        <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+        </svg>
+        <span class="text-[10px] font-medium">Home</span>
+      </button>
+
+      <!-- Search -->
+      <button class="tab-btn flex-1 flex flex-col items-center justify-center gap-0.5" data-tab="search">
+        <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <span class="text-[10px] font-medium">Search</span>
+      </button>
+
+      <!-- Upload (center, accent) -->
+      <button class="flex-1 flex flex-col items-center justify-center gap-0.5" id="upload-tab-btn">
+        <div class="upload-tab-btn">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+          </svg>
+        </div>
+      </button>
+
+      <!-- Notifications -->
+      <button class="tab-btn flex-1 flex flex-col items-center justify-center gap-0.5" data-tab="notifications">
+        <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+        </svg>
+        <span class="text-[10px] font-medium">Activity</span>
+      </button>
+
+      <!-- Profile -->
+      <button class="tab-btn flex-1 flex flex-col items-center justify-center gap-0.5" data-tab="profile">
+        <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+        </svg>
+        <span class="text-[10px] font-medium">Profile</span>
+      </button>
+
+    </div>
   </nav>
 
-  <!-- Main -->
-  <div id="workspace-main" class="flex-1 p-4 flex flex-col gap-4">
-
-    <!-- Stub-mode warning: shown when no Replicate API key is configured, so
-         generated images are random placeholders unrelated to the words. -->
-    <div id="generation-stub-banner" class="hidden text-sm text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-4 py-3">
-      ⚠️ <span class="font-semibold">Image generation isn't configured.</span>
-      Generated artwork is a random placeholder and won't match your words until a
-      <span class="font-medium">Replicate API key</span> is set in Settings → Secrets.
-    </div>
-
-    <!-- No active session -->
-    <div id="no-session-view" class="flex flex-col items-center justify-center py-24 text-zinc-500">
-      <div class="text-6xl mb-5">🖼️</div>
-      <p class="text-lg font-semibold text-zinc-300 mb-1.5">No active session</p>
-      <p class="text-sm text-zinc-500 mb-7">Create an artwork to start a collaborative session.</p>
-      <button id="cta-create-artwork"
-        class="inline-flex items-center gap-2 px-8 py-4 bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-lg font-semibold rounded-xl shadow-lg shadow-violet-900/40 hover:shadow-violet-700/50 transition-all hover:-translate-y-0.5">
-        🎨 Create Artwork
-      </button>
-    </div>
-
-    <!-- Active / Auction session (full-screen fixed overlay) -->
-    <div id="session-view" style="display:none">
-      <!-- Compact info strip -->
-      <div class="flex-shrink-0 flex items-center gap-2 px-3 bg-zinc-900 border-b border-zinc-800" style="height:34px">
-        <span class="font-semibold text-white text-sm truncate max-w-xs" id="sv-name"></span>
-        <span class="text-zinc-500 text-xs flex-shrink-0">by <span class="text-zinc-300" id="sv-creator"></span></span>
-        <span id="sv-badge" class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"></span>
-      </div>
-
-      <!-- Words + auction area -->
-      <div id="words-stage">
-        <!-- Words panel (centered) -->
-        <div id="words-panel">
-          <p class="section-label mb-4">5 Words</p>
-          <div id="word-chips" class="flex flex-wrap gap-2"></div>
-          <p id="words-hint" class="text-xs text-zinc-500 mt-4">Click a word to change it (costs 1 credit + bid)</p>
-        </div>
-
-        <!-- Floating auction panel (right) -->
-        <div id="auction-panel" class="bg-zinc-900/96 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl p-4 flex flex-col gap-3">
-          <!-- filled by renderAuctionPanel() -->
+  <!-- ══ Post-detail modal ══ -->
+  <div id="post-modal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm overflow-auto flex items-center justify-center p-4">
+    <div class="relative bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+      <button id="pm-close" class="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-full bg-zinc-800/90 text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors text-xl leading-none">&times;</button>
+      <img id="pm-img" src="" alt="" class="w-full aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-95 transition-opacity">
+      <div class="p-4">
+        <p id="pm-name" class="font-semibold text-white text-base mb-0.5 pr-6"></p>
+        <p class="text-xs text-zinc-500 mb-0.5">by <span id="pm-creator" class="text-zinc-300 font-medium"></span></p>
+        <p id="pm-winner-line" class="text-xs text-violet-400 mb-2 hidden"></p>
+        <div id="pm-words" class="flex flex-wrap gap-1 mb-3"></div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" id="pm-like-btn" class="like-btn pill">
+            <span class="like-icon">🤍</span>
+            <span class="like-count tabular-nums">0</span>
+          </button>
+          <span class="pill cursor-default !cursor-default">💬 <span id="pm-comment-count" class="tabular-nums">0</span></span>
+          <div id="pm-share" class="flex flex-wrap gap-1.5"></div>
+          <button id="pm-download" class="pill hidden">⬇️ Download</button>
+          <button id="pm-gift" class="pill !text-amber-300 hidden">🎁 Gift</button>
         </div>
       </div>
-    </div>
-
-    <!-- Locked session (just generated) -->
-    <div id="locked-view" class="hidden">
-      <div class="bg-zinc-900 rounded-2xl border border-zinc-800 p-6">
-        <div class="flex items-center gap-3 mb-5">
-          <span class="text-2xl">🔒</span>
-          <div>
-            <p class="font-semibold text-white text-lg leading-tight" id="lv-name"></p>
-            <p class="text-xs text-zinc-500 mt-0.5">Session locked · artwork generated</p>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          <div>
-            <p class="section-label mb-2.5">5 Words</p>
-            <div id="lv-words" class="flex flex-wrap gap-1.5"></div>
-          </div>
-          <div>
-            <p class="section-label mb-2.5">Generated Artwork</p>
-            <img id="lv-artwork" src="" alt="Generated artwork" class="w-full rounded-xl aspect-square object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity">
-            <button id="lv-download" class="btn btn-secondary w-full mt-3">⬇️ Download image</button>
-            <button id="lv-gift"
-              class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-none disabled:bg-zinc-800">
-              🎁 <span id="lv-gift-label">Send a gift</span>
-            </button>
-            <div id="lv-share" class="flex items-center gap-2 mt-2"></div>
-          </div>
-        </div>
-        <p class="mt-4 text-sm text-zinc-400 italic" id="lv-prompt"></p>
-        <p class="text-xs text-zinc-500 mt-1" id="lv-winner"></p>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Archive -->
-  <div id="archive-section" class="px-4 pb-8">
-    <div class="flex items-center justify-between gap-4 mb-3">
-      <h2 class="section-label">Session Archive</h2>
-      <div id="archive-cols" class="flex items-center gap-1.5">
-        <span class="text-xs text-zinc-500 mr-1 hidden sm:inline">Columns</span>
-        <div id="archive-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
-      </div>
-    </div>
-    <!-- Search / filter / sort controls -->
-    <div class="flex flex-wrap items-center gap-2 mb-4">
-      <input id="archive-search" type="search" placeholder="Search by name or creator…"
-        class="flex-1 min-w-[12rem] bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-violet-600">
-      <select id="archive-status"
-        class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
-        <option value="completed">Completed</option>
-        <option value="in_progress">In progress</option>
-        <option value="all">All</option>
-      </select>
-      <select id="archive-sort"
-        class="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600">
-        <option value="newest">Newest first</option>
-        <option value="oldest">Oldest first</option>
-      </select>
-    </div>
-    <div id="archive-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-      <p class="text-zinc-600 text-sm col-span-full">No completed sessions yet.</p>
     </div>
   </div>
 
-  <!-- Science Zone -->
-  <div id="science-view" class="hidden px-4 pb-8">
-    <div class="bg-gradient-to-r from-violet-950/50 to-zinc-900 border border-violet-900/40 rounded-2xl p-5 mb-5">
-      <h2 class="text-lg font-bold text-white flex items-center gap-2">🔬 Science Zone</h2>
-      <p class="text-sm text-zinc-400 mt-1">Completed artworks inspired by science — atoms, galaxies, DNA, gravity, and more.</p>
-    </div>
-    <div class="flex items-center justify-between gap-4 mb-3">
-      <h3 class="section-label">Science-themed artworks</h3>
-      <div id="science-cols" class="flex items-center gap-1.5">
-        <span class="text-xs text-zinc-500 mr-1 hidden sm:inline">Columns</span>
-        <div id="science-cols-group" class="inline-flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5"></div>
-      </div>
-    </div>
-    <div id="science-list" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-      <p class="text-zinc-600 text-sm col-span-full">No science-themed artworks yet.</p>
-    </div>
-  </div>
-
-  <!-- Create Artwork Modal -->
+  <!-- ══ Create Artwork Modal ══ -->
   <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
     <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
       <h2 class="text-lg font-semibold mb-1">Create Artwork</h2>
@@ -348,8 +446,7 @@
       </div>
       <div class="flex items-center justify-between mb-3">
         <p class="text-xs text-zinc-600">Separate words with spaces or commas</p>
-        <button id="modal-shuffle" type="button"
-          class="text-xs text-violet-400 hover:text-violet-300 transition-colors font-medium">🎲 Shuffle</button>
+        <button id="modal-shuffle" type="button" class="text-xs text-violet-400 hover:text-violet-300 transition-colors font-medium">🎲 Shuffle</button>
       </div>
       <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
       <div class="flex gap-2">
@@ -359,7 +456,7 @@
     </div>
   </div>
 
-  <!-- Word Edit Modal -->
+  <!-- ══ Word Edit Modal ══ -->
   <div id="word-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
     <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-xs shadow-2xl">
       <h2 class="text-base font-semibold mb-0.5">Change Word</h2>
@@ -381,51 +478,44 @@
     </div>
   </div>
 
-<!-- Lightbox -->
-<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image lightbox"
-  class="fixed inset-0 z-50 overflow-auto"
-  style="background: rgba(0,0,0,0.87)">
-  <div class="min-h-full flex items-center justify-center p-4">
-    <img id="lightbox-img" src="" alt="Full-size artwork"
-      class="max-w-full object-contain rounded-lg shadow-2xl transition-transform duration-200"
-      style="transform-origin: center; cursor: zoom-in; max-height: calc(100vh - 2rem)">
+  <!-- ══ Lightbox ══ -->
+  <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image lightbox"
+    class="fixed inset-0 z-60 overflow-auto" style="background: rgba(0,0,0,0.87)">
+    <div class="min-h-full flex items-center justify-center p-4">
+      <img id="lightbox-img" src="" alt="Full-size artwork"
+        class="max-w-full object-contain rounded-lg shadow-2xl transition-transform duration-200"
+        style="transform-origin: center; cursor: zoom-in; max-height: calc(100vh - 2rem)">
+    </div>
+    <button id="lightbox-close" aria-label="Close"
+      class="fixed top-4 right-4 w-11 h-11 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-600 text-white text-2xl font-normal transition-colors border border-zinc-700">&times;</button>
   </div>
-  <button id="lightbox-close" aria-label="Close"
-    class="fixed top-4 right-4 w-11 h-11 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-600 text-white text-2xl font-normal transition-colors border border-zinc-700">
-    &times;
-  </button>
-</div>
 
-<!-- Gift modal — sends real on-chain funds via the wallet, NOT in-app credits -->
-<div id="gift-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-  <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-    <h2 class="text-lg font-semibold text-white mb-1">🎁 Send a gift</h2>
-    <p class="text-xs text-zinc-500 mb-4">Tip the artwork owner with on-chain funds from your linked wallet. This is separate from your in-app credits.</p>
-
-    <div id="gift-staging-banner" class="hidden mb-3 text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2">
-      Staging — no real funds sent. This records a demo gift only.
-    </div>
-
-    <div class="mb-3 text-xs text-zinc-400">
-      To <span class="text-violet-300 font-medium">@<span id="gift-owner-name"></span></span>
-      <span class="block mt-1 font-mono text-zinc-500 text-[11px] break-all" id="gift-owner-addr"></span>
-    </div>
-
-    <label class="text-xs text-zinc-500 block mb-1">Amount</label>
-    <input id="gift-amount" type="number" min="0" step="any" placeholder="0.0"
-      class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors mb-1">
-    <p class="text-xs text-zinc-600 mb-4">Sent from your wallet on-chain.</p>
-
-    <div id="gift-error" class="hidden text-red-400 text-xs mb-3"></div>
-    <div class="flex gap-2">
-      <button id="gift-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
-      <button id="gift-submit" class="flex-1 px-4 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors">Send Gift</button>
+  <!-- ══ Gift modal ══ -->
+  <div id="gift-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+      <h2 class="text-lg font-semibold text-white mb-1">🎁 Send a gift</h2>
+      <p class="text-xs text-zinc-500 mb-4">Tip the artwork owner with on-chain funds from your linked wallet. This is separate from your in-app credits.</p>
+      <div id="gift-staging-banner" class="hidden mb-3 text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2">
+        Staging — no real funds sent. This records a demo gift only.
+      </div>
+      <div class="mb-3 text-xs text-zinc-400">
+        To <span class="text-violet-300 font-medium">@<span id="gift-owner-name"></span></span>
+        <span class="block mt-1 font-mono text-zinc-500 text-[11px] break-all" id="gift-owner-addr"></span>
+      </div>
+      <label class="text-xs text-zinc-500 block mb-1">Amount</label>
+      <input id="gift-amount" type="number" min="0" step="any" placeholder="0.0"
+        class="w-full bg-zinc-800 border border-zinc-600 focus:border-violet-500 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors mb-1">
+      <p class="text-xs text-zinc-600 mb-4">Sent from your wallet on-chain.</p>
+      <div id="gift-error" class="hidden text-red-400 text-xs mb-3"></div>
+      <div class="flex gap-2">
+        <button id="gift-cancel" class="flex-1 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg text-sm transition-colors">Cancel</button>
+        <button id="gift-submit" class="flex-1 px-4 py-2 bg-gradient-to-r from-amber-600 to-pink-600 hover:from-amber-500 hover:to-pink-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors">Send Gift</button>
+      </div>
     </div>
   </div>
-</div>
 
 <script>
-// ─── State ────────────────────────────────────────────────────────────────────
+// ─── Constants & state ────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.search);
 const token  = params.get('token') || '';
 const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
@@ -433,118 +523,8 @@ const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
 let wordEditIndex = -1;
 let socket;
-
-// ─── View switch (Workspace / Science Zone) ───────────────────────────────────
-const VIEW_KEY = 'active-view';
-const VIEW_OPTIONS = ['workspace', 'science'];
-let currentView = 'workspace'; // in-memory fallback when localStorage is unavailable
-
-function loadView() {
-  try {
-    const v = localStorage.getItem(VIEW_KEY);
-    if (VIEW_OPTIONS.includes(v)) { currentView = v; return; }
-    if (v !== null) localStorage.removeItem(VIEW_KEY);
-  } catch (e) { /* storage unavailable — use in-memory default */ }
-  currentView = 'workspace';
-}
-
-function renderViewToggle() {
-  const group = document.getElementById('view-toggle');
-  if (!group) return;
-  const opts = [{ k: 'workspace', label: '🎨 Workspace' }, { k: 'science', label: '🔬 Science Zone' }];
-  group.innerHTML = opts.map(o => {
-    const active = o.k === currentView;
-    return `<button type="button" data-view="${o.k}"
-      class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${active
-        ? 'bg-violet-600 text-white'
-        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">${o.label}</button>`;
-  }).join('');
-}
-
-// Show the workspace surfaces or the Science Zone. The Science Zone hides the
-// whole workspace container (#workspace-main), which also hides the fixed
-// full-screen #session-view overlay nested inside it, plus the archive section.
-function applyView() {
-  const isScience = currentView === 'science';
-  document.getElementById('workspace-main')?.classList.toggle('hidden', isScience);
-  document.getElementById('archive-section')?.classList.toggle('hidden', isScience);
-  document.getElementById('science-view')?.classList.toggle('hidden', !isScience);
-  if (isScience) renderScienceZone();
-  else renderMain(); // restore the correct workspace sub-view (and session overlay)
-  renderViewToggle();
-}
-
-function setView(v) {
-  if (!VIEW_OPTIONS.includes(v)) v = 'workspace';
-  currentView = v;
-  try { localStorage.setItem(VIEW_KEY, v); } catch (e) { /* keep in-memory */ }
-  applyView();
-}
-
-// ─── Archive column preference ──────────────────────────────────────────────────
-const ARCHIVE_COLS_KEY = 'archive-columns';
-const ARCHIVE_COL_OPTIONS = ['auto', '1', '2', '3', '4', '5'];
-let archiveCols = 'auto'; // in-memory fallback when localStorage is unavailable
-
-function loadArchiveCols() {
-  try {
-    const v = localStorage.getItem(ARCHIVE_COLS_KEY);
-    if (ARCHIVE_COL_OPTIONS.includes(v)) { archiveCols = v; return; }
-    if (v !== null) localStorage.removeItem(ARCHIVE_COLS_KEY); // corrupt/invalid → reset
-  } catch (e) { /* storage unavailable — use in-memory default */ }
-  archiveCols = 'auto';
-}
-
-function setArchiveCols(v) {
-  if (!ARCHIVE_COL_OPTIONS.includes(v)) v = 'auto';
-  archiveCols = v;
-  try { localStorage.setItem(ARCHIVE_COLS_KEY, v); } catch (e) { /* keep in-memory */ }
-  applyArchiveCols();
-}
-
-// Clamp a user-chosen column count to something usable at the current viewport.
-function effectiveArchiveCols() {
-  if (archiveCols === 'auto') return null;
-  let n = parseInt(archiveCols, 10);
-  const w = window.innerWidth;
-  if (w < 640) n = Math.min(n, 2);
-  else if (w < 1024) n = Math.min(n, 3);
-  return n;
-}
-
-// The same column preference governs both the archive grid and the Science
-// Zone grid, so apply the computed template to whichever lists are present.
-function applyArchiveCols() {
-  const n = effectiveArchiveCols();
-  // 'auto' → clear inline style so the responsive grid-cols-* classes resume.
-  const tmpl = n === null ? '' : `repeat(${n}, minmax(0, 1fr))`;
-  ['archive-list', 'science-list'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.gridTemplateColumns = tmpl;
-  });
-  renderArchiveColsControl();
-}
-
-function renderArchiveColsControl() {
-  const html = ARCHIVE_COL_OPTIONS.map(opt => {
-    const active = opt === archiveCols;
-    const label = opt === 'auto' ? 'Auto' : opt;
-    return `<button type="button" data-archive-col="${opt}"
-      class="px-2 py-1 rounded-md text-xs font-medium transition-colors ${active
-        ? 'bg-violet-600 text-white'
-        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">${label}</button>`;
-  }).join('');
-  ['archive-cols-group', 'science-cols-group'].forEach(id => {
-    const group = document.getElementById(id);
-    if (group) group.innerHTML = html;
-  });
-}
-
-let _archiveResizeTimer;
-function onArchiveResize() {
-  clearTimeout(_archiveResizeTimer);
-  _archiveResizeTimer = setTimeout(applyArchiveCols, 150);
-}
+let currentTab = 'home';
+const sessionDataMap = new Map(); // id -> session row (for post-detail)
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -556,33 +536,44 @@ async function api(method, path, body) {
   return data;
 }
 
+// ─── Escape ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Time helper ──────────────────────────────────────────────────────────────
+function timeAgo(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  const seconds = Math.floor((Date.now() - d) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 // ─── Word helpers ─────────────────────────────────────────────────────────────
 function getWords(session) {
   if (!session?.words) return [];
   if (Array.isArray(session.words)) return session.words;
   return session.words.split(',').filter(Boolean);
 }
-
 function parseInputWords(str) {
   return String(str || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
 }
 
-// Curated, evocative single-token words (all lowercase, ≤30 chars, no spaces
-// or commas) used to pre-fill the New Session modal so a user can create an
-// artwork in one click. Drawing N distinct words from this bank always yields
-// a "fully filled" 5-word set that passes both client and server validation.
 const WORD_BANK = [
-  'ocean', 'stars', 'fire', 'ancient', 'glass', 'forest', 'storm', 'velvet',
-  'ember', 'crystal', 'shadow', 'aurora', 'nebula', 'desert', 'frost', 'bloom',
-  'thunder', 'silk', 'marble', 'twilight', 'obsidian', 'meadow', 'comet',
-  'lantern', 'mist', 'coral', 'canyon', 'willow', 'prism', 'tide', 'iron',
-  'dusk', 'cinder', 'gilded', 'monsoon', 'glacier', 'opal', 'feather',
-  'volcano', 'serene', 'cosmic', 'rust', 'jade', 'whisper', 'mirage', 'echo',
-  'lotus', 'tempest', 'amber', 'horizon', 'spectral', 'velour', 'quartz',
-  'eclipse', 'driftwood', 'lavender', 'thistle', 'radiant', 'fathom', 'wander'
+  'ocean','stars','fire','ancient','glass','forest','storm','velvet',
+  'ember','crystal','shadow','aurora','nebula','desert','frost','bloom',
+  'thunder','silk','marble','twilight','obsidian','meadow','comet',
+  'lantern','mist','coral','canyon','willow','prism','tide','iron',
+  'dusk','cinder','gilded','monsoon','glacier','opal','feather',
+  'volcano','serene','cosmic','rust','jade','whisper','mirage','echo',
+  'lotus','tempest','amber','horizon','spectral','velour','quartz',
+  'eclipse','driftwood','lavender','thistle','radiant','fathom','wander'
 ];
-
-// Return N distinct random words from WORD_BANK (sample without replacement).
 function randomWords(n) {
   const pool = WORD_BANK.slice();
   for (let i = pool.length - 1; i > 0; i--) {
@@ -598,69 +589,372 @@ function renderWordChips(container, words, editable) {
     const chip = document.createElement('span');
     chip.className = 'word-chip' + (editable ? ' editable' : '');
     chip.innerHTML = esc(word) + (editable ? '<span class="edit-icon">✏️</span>' : '');
-    if (editable) {
-      chip.addEventListener('click', () => openWordModal(i, word));
-    }
+    if (editable) chip.addEventListener('click', () => openWordModal(i, word));
     container.appendChild(chip);
   });
 }
 
-function renderSmallWordChips(container, words) {
-  container.innerHTML = '';
-  words.forEach(word => {
-    const chip = document.createElement('span');
-    chip.className = 'chip-sm';
-    chip.textContent = word;
-    container.appendChild(chip);
-  });
-}
-
-// ─── Render ───────────────────────────────────────────────────────────────────
+// ─── Header ───────────────────────────────────────────────────────────────────
 function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
   document.getElementById('generation-stub-banner').classList.toggle('hidden', !(me && me.generationStubbed));
 }
 
-function renderMain() {
-  const noView   = document.getElementById('no-session-view');
-  const sessView = document.getElementById('session-view');
-  const lockView = document.getElementById('locked-view');
+// ─── Tab management ───────────────────────────────────────────────────────────
+function setTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  document.querySelectorAll('.tab-pane').forEach(pane => {
+    pane.classList.toggle('hidden', pane.dataset.tab !== tab);
+  });
+  renderCurrentTab();
+}
 
-  noView.classList.add('hidden');
-  sessView.style.display = 'none';
-  lockView.classList.add('hidden');
-
-  if (!activeSession) {
-    if (lockedSessionData) { renderLockedView(lockedSessionData); lockView.classList.remove('hidden'); }
-    else noView.classList.remove('hidden');
-    return;
+function renderCurrentTab() {
+  switch (currentTab) {
+    case 'home':          renderHome();          break;
+    case 'search':        renderSearch();        break;
+    case 'notifications': renderNotifications(); break;
+    case 'profile':       renderProfile();       break;
   }
+}
 
-  if (activeSession.state === 'active' || activeSession.state === 'auction') {
-    sessView.style.display = 'flex';
+// ─── HOME TAB ─────────────────────────────────────────────────────────────────
+function renderHome() {
+  renderLiveBanner();
+  renderLockedBanner();
+  renderStoriesRow();
+  renderFeed();
+}
 
-    document.getElementById('sv-name').textContent    = activeSession.name;
-    document.getElementById('sv-creator').textContent = `@${activeSession.creator_username}`;
+function renderLiveBanner() {
+  const el = document.getElementById('live-banner');
+  if (!activeSession) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const state = activeSession.state === 'auction' ? 'Auction' : 'Active';
+  const stateColor = activeSession.state === 'auction' ? 'amber' : 'emerald';
+  el.innerHTML = `
+    <button type="button" id="open-live-session"
+      class="w-full bg-zinc-900 border border-zinc-800 hover:border-violet-700/50 rounded-2xl p-4 flex items-center gap-4 transition-colors text-left">
+      <span class="w-2 h-2 rounded-full bg-${stateColor}-400 animate-pulse flex-shrink-0"></span>
+      <div class="min-w-0 flex-1">
+        <p class="text-xs text-${stateColor}-400 font-semibold mb-0.5">🔴 Live Session · ${state}</p>
+        <p class="font-semibold text-white text-sm truncate">${esc(activeSession.name)}</p>
+        <p class="text-xs text-zinc-500">by @${esc(activeSession.creator_username)}</p>
+      </div>
+      <svg class="w-4 h-4 text-zinc-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+      </svg>
+    </button>`;
+  document.getElementById('open-live-session').addEventListener('click', openSessionOverlay);
+}
 
-    const badge = document.getElementById('sv-badge');
-    if (activeSession.state === 'active') {
-      badge.textContent = 'Active';
-      badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-900/50 text-emerald-400 flex-shrink-0';
-    } else {
-      badge.textContent = 'Auction';
-      badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-amber-900/50 text-amber-400 flex-shrink-0';
+function renderLockedBanner() {
+  const el = document.getElementById('locked-banner');
+  if (!lockedSessionData) { el.classList.add('hidden'); return; }
+  const s = lockedSessionData;
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <button type="button" class="w-full text-left" data-open-post="${s.id}">
+      <div class="bg-gradient-to-r from-violet-950/70 to-zinc-900 border border-violet-800/50 hover:border-violet-700 rounded-2xl p-4 flex items-center gap-4 transition-colors">
+        <img src="${esc(s.image_url || '')}" alt="${esc(s.name)}"
+          class="w-16 h-16 rounded-xl object-cover bg-zinc-800 flex-shrink-0">
+        <div class="min-w-0">
+          <p class="text-xs text-violet-300 font-semibold mb-0.5">✨ New Artwork Generated</p>
+          <p class="font-semibold text-white text-sm truncate">${esc(s.name)}</p>
+          <p class="text-xs text-zinc-400">by @${esc(s.winner_username || s.owner_username || '?')}</p>
+        </div>
+      </div>
+    </button>`;
+}
+
+async function renderStoriesRow() {
+  const el = document.getElementById('stories-row');
+  el.innerHTML = '';
+  try {
+    const { stories } = await api('GET', '/api/stories');
+    if (!stories.length) return;
+    el.innerHTML = stories.map(s => `
+      <button type="button" class="story-btn" data-story-session="${esc(s.session_id)}">
+        <div class="story-ring">
+          <img src="${esc(s.image_url || 'https://picsum.photos/seed/empty/64/64')}"
+               class="story-avatar" alt="${esc(s.username)}" loading="lazy"
+               onerror="this.src='https://picsum.photos/seed/${esc(s.username)}/64/64'">
+        </div>
+        <span class="story-name">@${esc(s.username)}</span>
+      </button>`).join('');
+  } catch(e) { /* stories are optional */ }
+}
+
+async function renderFeed() {
+  const el = document.getElementById('feed-grid');
+  try {
+    const { sessions } = await api('GET', '/api/sessions/locked?status=completed&sort=newest');
+    sessions.forEach(s => sessionDataMap.set(s.id, s));
+    if (!sessions.length) {
+      el.innerHTML = `<div class="col-span-3 flex flex-col items-center justify-center py-20 text-zinc-500">
+        <div class="text-5xl mb-3">🖼️</div>
+        <p class="text-sm font-medium text-zinc-400 mb-1">No artworks yet</p>
+        <p class="text-xs">Create one with the + button below</p>
+      </div>`;
+      return;
     }
+    el.innerHTML = sessions.map(s => feedCellHtml(s)).join('');
+  } catch(e) { el.innerHTML = '<p class="col-span-3 text-zinc-600 text-sm text-center py-10">Failed to load artworks.</p>'; }
+}
 
-    const words = getWords(activeSession);
-    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
-    renderWordChips(document.getElementById('word-chips'), words, editable);
+// ─── Feed cell ────────────────────────────────────────────────────────────────
+function feedCellHtml(s) {
+  return `
+    <button type="button" class="feed-cell" data-open-post="${s.id}">
+      <img src="${esc(s.image_url || `https://picsum.photos/seed/${s.id}/400/400`)}"
+           alt="${esc(s.name)}" class="w-full aspect-square object-cover bg-zinc-800" loading="lazy">
+      <div class="cell-overlay">
+        <span>❤️ ${s.like_count || 0}</span>
+        <span>💬 ${s.comment_count || 0}</span>
+      </div>
+    </button>`;
+}
 
-    const hintEl = document.getElementById('words-hint');
-    if (hintEl) hintEl.style.display = editable ? '' : 'none';
+// ─── Post-detail modal ────────────────────────────────────────────────────────
+function openPostDetail(sessionId) {
+  const id = parseInt(sessionId);
+  const s = sessionDataMap.get(id);
+  if (!s) return;
 
-    renderAuctionPanel();
+  document.getElementById('pm-img').src = s.image_url || '';
+  document.getElementById('pm-name').textContent = s.name;
+  document.getElementById('pm-creator').textContent = `@${s.creator_username}`;
+
+  const winnerLine = document.getElementById('pm-winner-line');
+  if (s.winner_username) {
+    winnerLine.textContent = `🏆 @${s.winner_username}${s.winning_bid != null ? ` · ${parseInt(s.winning_bid)} credits` : ''}`;
+    winnerLine.classList.remove('hidden');
+  } else {
+    winnerLine.classList.add('hidden');
   }
+
+  const wordsEl = document.getElementById('pm-words');
+  wordsEl.innerHTML = '';
+  getWords(s).forEach(w => {
+    const chip = document.createElement('span');
+    chip.className = 'chip-sm';
+    chip.textContent = w;
+    wordsEl.appendChild(chip);
+  });
+
+  const likeBtn = document.getElementById('pm-like-btn');
+  likeBtn.dataset.likeSession = s.id;
+  applyLikeState(likeBtn, s.liked_by_me, s.like_count || 0);
+
+  document.getElementById('pm-comment-count').textContent = s.comment_count || 0;
+
+  // Share
+  const shareEl = document.getElementById('pm-share');
+  if (navigator.share) {
+    shareEl.innerHTML = `<button type="button" class="pill" data-native-share="${esc(s.id)}" data-share-title="${esc(s.name)}">📤 Share</button>`;
+  } else {
+    shareEl.innerHTML = shareButtonsHtml(s.id, s.name);
+  }
+
+  // Download
+  const dlBtn = document.getElementById('pm-download');
+  if (s.image_url) {
+    dlBtn.classList.remove('hidden');
+    dlBtn.onclick = () => downloadArtwork(s.id, dlBtn);
+  } else {
+    dlBtn.classList.add('hidden');
+  }
+
+  // Gift
+  const giftBtn = document.getElementById('pm-gift');
+  const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey, owner_user_id: s.owner_user_id });
+  if (!giftReason) {
+    giftBtn.classList.remove('hidden');
+    giftBtn.disabled = false;
+    giftBtn.title = '';
+    giftBtn.onclick = () => openGiftModal({
+      sessionId: s.id,
+      ownerName: s.owner_username || s.winner_username || '',
+      ownerPubkey: s.owner_pubkey,
+      onSuccess: total => {
+        const updated = sessionDataMap.get(s.id);
+        if (updated) updated.gift_total = total;
+      }
+    });
+  } else {
+    giftBtn.classList.add('hidden');
+  }
+
+  // Lightbox on image click
+  document.getElementById('pm-img').onclick = () => {
+    if (s.image_url) openLightbox(s.image_url);
+  };
+
+  document.getElementById('post-modal').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closePostDetail() {
+  document.getElementById('post-modal').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+// ─── SEARCH TAB ───────────────────────────────────────────────────────────────
+let searchFilter = 'completed';
+let _searchTimer;
+
+function renderSearch() {
+  // Restore chip active state
+  updateFilterChips();
+  fetchAndRenderSearchResults();
+}
+
+function updateFilterChips() {
+  document.querySelectorAll('.filter-chip').forEach(btn => {
+    const active = btn.dataset.filter === searchFilter;
+    btn.classList.toggle('active-chip', active);
+    btn.style.background = active ? 'rgba(124,58,237,0.25)' : '';
+    btn.style.borderColor = active ? 'rgba(124,58,237,0.6)' : '';
+    btn.style.color = active ? '#c4b5fd' : '';
+  });
+  const isScience = searchFilter === 'science';
+  const searchInput = document.getElementById('search-input');
+  const sortSelect = document.getElementById('search-sort');
+  if (searchInput) { searchInput.disabled = isScience; searchInput.style.opacity = isScience ? '0.4' : ''; }
+  if (sortSelect) { sortSelect.disabled = isScience; sortSelect.style.opacity = isScience ? '0.4' : ''; }
+}
+
+async function fetchAndRenderSearchResults() {
+  const el = document.getElementById('search-results');
+  if (!el) return;
+  el.innerHTML = '<p class="col-span-3 text-zinc-600 text-sm text-center py-10">Loading…</p>';
+  try {
+    let sessions;
+    if (searchFilter === 'science') {
+      const data = await api('GET', '/api/artworks/science');
+      sessions = data.sessions;
+    } else {
+      const q = (document.getElementById('search-input')?.value || '').trim();
+      const sort = document.getElementById('search-sort')?.value || 'newest';
+      const qs = new URLSearchParams({ status: searchFilter, sort });
+      if (q) qs.set('q', q);
+      const data = await api('GET', `/api/sessions/locked?${qs}`);
+      sessions = data.sessions;
+    }
+    sessions.forEach(s => sessionDataMap.set(s.id, s));
+    if (!sessions.length) {
+      el.innerHTML = '<p class="col-span-3 text-zinc-600 text-sm text-center py-10">No artworks match.</p>';
+      return;
+    }
+    el.innerHTML = sessions.map(s => feedCellHtml(s)).join('');
+  } catch(e) {
+    el.innerHTML = '<p class="col-span-3 text-zinc-600 text-sm text-center py-10">Failed to load.</p>';
+  }
+}
+
+// ─── NOTIFICATIONS TAB ────────────────────────────────────────────────────────
+async function renderNotifications() {
+  const el = document.getElementById('notifications-list');
+  if (!el) return;
+  el.innerHTML = '<p class="text-zinc-600 text-sm text-center py-16">Loading…</p>';
+  try {
+    const { notifications } = await api('GET', '/api/notifications');
+    if (!notifications.length) {
+      el.innerHTML = `<div class="flex flex-col items-center py-16 text-zinc-500">
+        <div class="text-4xl mb-3">🔔</div>
+        <p class="text-sm font-medium">No notifications yet</p>
+        <p class="text-xs text-zinc-600 mt-1">Likes and new artworks will appear here</p>
+      </div>`;
+      return;
+    }
+    el.innerHTML = notifications.map(n => {
+      const time = timeAgo(n.created_at);
+      if (n.type === 'like') {
+        return `<button type="button" class="notif-row" data-open-post="${n.session_id}">
+          <span class="notif-icon">❤️</span>
+          <div class="notif-body">
+            <span class="notif-user">@${esc(n.username)}</span> liked <span class="font-medium">${esc(n.session_name)}</span>
+            <div class="notif-time">${time}</div>
+          </div>
+        </button>`;
+      }
+      return `<button type="button" class="notif-row" data-open-post="${n.session_id}">
+        <span class="notif-icon">🎨</span>
+        <div class="notif-body">
+          <span class="notif-user">@${esc(n.username)}</span> created <span class="font-medium">${esc(n.session_name)}</span>
+          <div class="notif-time">${time}</div>
+        </div>
+      </button>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<p class="text-zinc-600 text-sm text-center py-16">Failed to load notifications.</p>';
+  }
+}
+
+// ─── PROFILE TAB ──────────────────────────────────────────────────────────────
+async function renderProfile() {
+  const usernameEl = document.getElementById('profile-username');
+  if (me && usernameEl) usernameEl.textContent = `@${me.username}`;
+
+  const gridEl = document.getElementById('profile-grid');
+  gridEl.innerHTML = '<p class="col-span-3 text-zinc-600 text-sm text-center py-10">Loading…</p>';
+  try {
+    const { sessions } = await api('GET', '/api/me/artworks');
+    sessions.forEach(s => sessionDataMap.set(s.id, s));
+
+    const count = sessions.length;
+    const totalLikes = sessions.reduce((sum, s) => sum + (s.like_count || 0), 0);
+    const countEl = document.getElementById('profile-artwork-count');
+    const likeEl  = document.getElementById('profile-like-count');
+    if (countEl) countEl.textContent = count;
+    if (likeEl) likeEl.textContent = totalLikes;
+
+    if (!sessions.length) {
+      gridEl.innerHTML = `<div class="col-span-3 flex flex-col items-center py-16 text-zinc-500">
+        <div class="text-4xl mb-3">🎨</div>
+        <p class="text-sm">No artworks yet</p>
+        <p class="text-xs text-zinc-600 mt-1">Create your first artwork with the + button</p>
+      </div>`;
+      return;
+    }
+    gridEl.innerHTML = sessions.map(s => feedCellHtml(s)).join('');
+  } catch(e) {
+    gridEl.innerHTML = '<p class="col-span-3 text-zinc-600 text-sm text-center py-10">Failed to load.</p>';
+  }
+}
+
+// ─── Session overlay (active / auction) ───────────────────────────────────────
+function openSessionOverlay() {
+  if (!activeSession) return;
+  const sv = document.getElementById('session-view');
+  sv.style.display = 'flex';
+
+  document.getElementById('sv-name').textContent    = activeSession.name;
+  document.getElementById('sv-creator').textContent = `@${activeSession.creator_username}`;
+
+  const badge = document.getElementById('sv-badge');
+  if (activeSession.state === 'active') {
+    badge.textContent = 'Active';
+    badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-900/50 text-emerald-400 flex-shrink-0';
+  } else {
+    badge.textContent = 'Auction';
+    badge.className   = 'text-xs px-2 py-0.5 rounded-full font-medium bg-amber-900/50 text-amber-400 flex-shrink-0';
+  }
+
+  const words = getWords(activeSession);
+  renderWordChips(document.getElementById('word-chips'), words, true);
+  const hintEl = document.getElementById('words-hint');
+  if (hintEl) hintEl.style.display = '';
+  renderAuctionPanel();
+}
+
+function closeSessionOverlay() {
+  const sv = document.getElementById('session-view');
+  sv.style.display = 'none';
 }
 
 function renderAuctionPanel() {
@@ -757,134 +1051,35 @@ function updateCountdown(remaining) {
   textEl.textContent = remaining;
 }
 
-function renderLockedView(data) {
-  document.getElementById('lv-name').textContent   = data.name;
-  document.getElementById('lv-artwork').src        = data.image_url || '';
-  document.getElementById('lv-prompt').textContent = data.prompt || '';
-  document.getElementById('lv-winner').textContent = `Winner: @${data.winner_username || data.owner_username || '?'} · ${data.winning_bid || data.current_bid || '?'} credits`;
-  const words = getWords(data);
-  renderSmallWordChips(document.getElementById('lv-words'), words);
-
-  const dlBtn = document.getElementById('lv-download');
-  if (dlBtn) {
-    const hasImage = !!data.image_url;
-    dlBtn.disabled = !hasImage;
-    dlBtn.onclick = hasImage ? () => downloadArtwork(data.id, dlBtn) : null;
-  }
-
-  const giftBtn = document.getElementById('lv-gift');
-  if (giftBtn) {
-    const ownerName = data.owner_username || data.winner_username || '';
-    const reason = giftDisabledReason({
-      owner_pubkey: data.owner_pubkey,
-      owner_user_id: data.owner_user_id
-    });
-    giftBtn.disabled = !!reason;
-    giftBtn.title = reason || 'Send an on-chain gift to this artwork';
-    const labelEl = document.getElementById('lv-gift-label');
-    if (labelEl) labelEl.textContent = reason ? (reason.length < 28 ? reason : 'Gift unavailable') : 'Send a gift';
-    giftBtn.onclick = reason ? null : () => openGiftModal({
-      sessionId: data.id,
-      ownerName,
-      ownerPubkey: data.owner_pubkey,
-      onSuccess: total => {
-        if (lockedSessionData) lockedSessionData.gift_total = total;
-        renderArchive();
-      }
-    });
-  }
-
-  const shareEl = document.getElementById('lv-share');
-  if (shareEl) shareEl.innerHTML = data.id ? shareButtonsHtml(data.id, data.name) : '';
-}
-
-// Why the gift button should be disabled for a given artwork, or null if it's
-// giftable by the current user. Covers: owner has no linked wallet, current
-// user has no linked wallet, and self-gifting.
-function giftDisabledReason(artwork) {
-  if (!artwork || !artwork.owner_pubkey) return "Creator hasn't linked a wallet yet";
-  if (!me || !me.usernode_pubkey) return 'Link a wallet to send gifts';
-  if (artwork.owner_pubkey === me.usernode_pubkey) return "You can't gift your own artwork";
-  if (artwork.owner_user_id != null && me.id != null && artwork.owner_user_id === me.id) {
-    return "You can't gift your own artwork";
-  }
-  return null;
-}
-
-// Download the generated artwork via the auth-gated server proxy, which
-// streams the remote image back with a Content-Disposition filename.
-async function downloadArtwork(sessionId, btn) {
-  if (!sessionId) return;
-  const original = btn ? btn.innerHTML : null;
-  if (btn) { btn.disabled = true; btn.innerHTML = '⬇️ Downloading…'; }
-  try {
-    const res = await fetch(`/api/session/${sessionId}/image/download`, { headers: { 'x-usernode-token': token } });
-    if (!res.ok) {
-      let msg = 'Download failed';
-      try { msg = (await res.json()).error || msg; } catch {}
-      throw new Error(msg);
-    }
-    const blob = await res.blob();
-    const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `artwork-${sessionId}.jpg`;
-    // Server proxies the artwork as a high-resolution JPEG.
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (err) {
-    alert(err.message || 'Download failed');
-  } finally {
-    if (btn && original !== null) { btn.disabled = false; btn.innerHTML = original; }
-  }
-}
-
 // ─── Sharing ──────────────────────────────────────────────────────────────────
-// Public share URL for an artwork. The app runs on its own subdomain inside
-// the iframe, so location.origin already equals the public origin that serves
-// the /a/:id landing page.
 function shareUrlFor(id) { return `${location.origin}/a/${id}`; }
 
-// Markup for the per-artwork share controls (copy link / X / Facebook). Title
-// is HTML-escaped for the attribute; dataset reads it back as the raw string.
 function shareButtonsHtml(id, title) {
   const t = esc(title || '');
   return `
     <button type="button" class="pill" data-share-copy="${esc(id)}" title="Copy link">🔗 <span class="share-copy-label">Copy link</span></button>
-    <button type="button" class="pill" data-share-x="${esc(id)}" data-share-title="${t}" title="Share on X" aria-label="Share on X">𝕏</button>
-    <button type="button" class="pill" data-share-fb="${esc(id)}" title="Share on Facebook" aria-label="Share on Facebook">f</button>`;
+    <button type="button" class="pill" data-share-x="${esc(id)}" data-share-title="${t}" title="Share on X" aria-label="Share on X">𝕏</button>`;
 }
 
 async function copyShareLink(id, btn) {
   const url = shareUrlFor(id);
   let ok = false;
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(url);
-      ok = true;
-    }
-  } catch { /* fall through to execCommand fallback (sandboxed iframe) */ }
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(url); ok = true; }
+  } catch {}
   if (!ok) {
     try {
       const inp = document.createElement('input');
-      inp.value = url;
-      inp.style.position = 'fixed';
-      inp.style.opacity = '0';
-      document.body.appendChild(inp);
-      inp.focus(); inp.select();
-      ok = document.execCommand('copy');
-      inp.remove();
-    } catch { /* clipboard genuinely unavailable */ }
+      inp.value = url; inp.style.position = 'fixed'; inp.style.opacity = '0';
+      document.body.appendChild(inp); inp.focus(); inp.select();
+      ok = document.execCommand('copy'); inp.remove();
+    } catch {}
   }
   if (btn) {
     const label = btn.querySelector('.share-copy-label');
     if (label) {
       const prev = label.dataset.prev || label.textContent;
-      label.dataset.prev = prev;
-      label.textContent = ok ? 'Copied!' : 'Copy failed';
+      label.dataset.prev = prev; label.textContent = ok ? 'Copied!' : 'Copy failed';
       clearTimeout(btn._copyTimer);
       btn._copyTimer = setTimeout(() => { label.textContent = prev; }, 1600);
     }
@@ -893,13 +1088,7 @@ async function copyShareLink(id, btn) {
 
 function shareToX(id, title) {
   const text = (title ? `${title} — Artwork` : 'Check out this artwork') + ' 🎨';
-  const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrlFor(id))}`;
-  window.open(intent, '_blank', 'noopener,noreferrer');
-}
-
-function shareToFacebook(id) {
-  const intent = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrlFor(id))}`;
-  window.open(intent, '_blank', 'noopener,noreferrer');
+  window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrlFor(id))}`, '_blank', 'noopener,noreferrer');
 }
 
 // ─── Lightbox ─────────────────────────────────────────────────────────────────
@@ -908,11 +1097,8 @@ let _lbEscHandler = null;
 function openLightbox(src) {
   const lb  = document.getElementById('lightbox');
   const img = document.getElementById('lightbox-img');
-  img.src = src;
-  img.classList.remove('lb-zoomed');
-  img.style.cursor = 'zoom-in';
-  lb.scrollTop = 0;
-  lb.classList.add('lb-open');
+  img.src = src; img.classList.remove('lb-zoomed'); img.style.cursor = 'zoom-in';
+  lb.scrollTop = 0; lb.classList.add('lb-open');
   document.body.style.overflow = 'hidden';
   document.getElementById('lightbox-close').focus();
   _lbEscHandler = e => { if (e.key === 'Escape') closeLightbox(); };
@@ -922,17 +1108,10 @@ function openLightbox(src) {
 function closeLightbox() {
   document.getElementById('lightbox').classList.remove('lb-open');
   document.body.style.overflow = '';
-  if (_lbEscHandler) {
-    document.removeEventListener('keydown', _lbEscHandler);
-    _lbEscHandler = null;
-  }
+  if (_lbEscHandler) { document.removeEventListener('keydown', _lbEscHandler); _lbEscHandler = null; }
 }
 
 function initLightbox() {
-  document.getElementById('lv-artwork').addEventListener('click', () => {
-    const src = document.getElementById('lv-artwork').src;
-    if (src) openLightbox(src);
-  });
   document.getElementById('lightbox').addEventListener('click', e => {
     if (!e.target.closest('#lightbox-img') && !e.target.closest('#lightbox-close')) closeLightbox();
   });
@@ -951,113 +1130,65 @@ function filenameFromDisposition(header) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-// Current archive control state. Read fresh from the DOM on each render so
-// the values always reflect what the user has selected.
-function archiveQuery() {
-  const q = (document.getElementById('archive-search')?.value || '').trim();
-  const status = document.getElementById('archive-status')?.value || 'completed';
-  const sort = document.getElementById('archive-sort')?.value || 'newest';
-  const params = new URLSearchParams();
-  if (q) params.set('q', q);
-  params.set('status', status);
-  params.set('sort', sort);
-  return { qs: params.toString(), q, status, sort };
-}
-
-// Markup for one completed-artwork card. Shared by the Session Archive and the
-// Science Zone so likes/gifts/share/download/lightbox behave identically in both.
-function artworkCardHtml(s) {
-  const words = (s.words || '').split(',').filter(Boolean);
-  const wordChips = words.map(w => `<span class="chip-sm">${esc(w)}</span>`).join('');
-  const giftReason = giftDisabledReason({ owner_pubkey: s.owner_pubkey });
-  const giftTotal = Number(s.gift_total || 0);
-  const ownerName = s.owner_username || s.winner_username || '';
-  return `
-    <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden transition-colors hover:border-zinc-700">
-      <img src="${esc(s.image_url || 'https://picsum.photos/seed/default/400/300')}" alt="Generated artwork"
-        class="w-full aspect-video object-cover bg-zinc-800 cursor-pointer hover:opacity-90 transition-opacity" loading="lazy">
-      <div class="p-4">
-        <p class="font-semibold text-sm text-white truncate">${esc(s.name)}</p>
-        <p class="text-xs text-zinc-500 mt-0.5">by @${esc(s.creator_username)}</p>
-        ${s.winner_username ? `<p class="text-xs text-violet-400 mt-1">🏆 @${esc(s.winner_username)} · ${s.winning_bid || s.current_bid || '?'} credits</p>` : ''}
-        <div class="flex flex-wrap gap-1.5 mt-2.5">${wordChips}</div>
-        <div class="flex flex-wrap items-center gap-2 mt-3">
-          <button type="button" data-like-session="${esc(s.id)}"
-            class="like-btn pill ${s.liked_by_me ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : ''}">
-            <span class="like-icon">${s.liked_by_me ? '❤️' : '🤍'}</span>
-            <span class="like-count tabular-nums">${s.like_count || 0}</span>
-          </button>
-          <button type="button" class="gift-btn pill !text-amber-300 hover:!border-amber-600/60 disabled:opacity-40 disabled:cursor-not-allowed disabled:!text-zinc-500"
-            data-gift-session="${esc(s.id)}"
-            data-owner-pubkey="${esc(s.owner_pubkey || '')}"
-            data-owner-name="${esc(ownerName)}"
-            ${giftReason ? 'disabled' : ''}
-            title="${esc(giftReason || 'Send an on-chain gift to this artwork')}">
-            <span>🎁</span>
-            <span class="gift-total tabular-nums">${formatGiftTotal(giftTotal)}</span>
-          </button>
-          ${shareButtonsHtml(s.id, s.name)}
-          ${s.image_url ? `<button data-download="${esc(s.id)}" class="pill">⬇️ Download</button>` : ''}
-        </div>
-      </div>
-    </div>`;
-}
-
-// Wire the per-card download buttons in a freshly-rendered grid. (Like/gift/
-// share/image clicks are handled by the delegated grid listener; see init.)
-function bindCardDownloads(el) {
-  el.querySelectorAll('button[data-download]').forEach(btn => {
-    btn.addEventListener('click', () => downloadArtwork(parseInt(btn.getAttribute('data-download')), btn));
-  });
-}
-
-async function renderArchive() {
+// ─── Download ─────────────────────────────────────────────────────────────────
+async function downloadArtwork(sessionId, btn) {
+  if (!sessionId) return;
+  const original = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⬇️ Downloading…'; }
   try {
-    const { qs, q, status } = archiveQuery();
-    const { sessions } = await api('GET', `/api/sessions/locked?${qs}`);
-    const el = document.getElementById('archive-list');
-    if (!sessions.length) {
-      // Distinguish "nothing matches the active filters" from a genuinely
-      // empty archive (default view, no search and showing completed).
-      const filtered = q || status !== 'completed';
-      const msg = filtered ? 'No artworks match your search.' : 'No completed sessions yet.';
-      el.innerHTML = `<p class="text-zinc-600 text-sm col-span-full">${msg}</p>`;
-      applyArchiveCols(); return;
-    }
-    el.innerHTML = sessions.map(artworkCardHtml).join('');
-    bindCardDownloads(el);
-    applyArchiveCols();
-  } catch (err) { console.error('archive error:', err); }
+    const res = await fetch(`/api/session/${sessionId}/image/download`, { headers: { 'x-usernode-token': token } });
+    if (!res.ok) { let m='Download failed'; try { m=(await res.json()).error||m; } catch{}; throw new Error(m); }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(res.headers.get('content-disposition')) || `artwork-${sessionId}.jpg`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch (err) { alert(err.message || 'Download failed'); }
+  finally { if (btn && original !== null) { btn.disabled = false; btn.innerHTML = original; } }
 }
 
-async function renderScienceZone() {
-  const el = document.getElementById('science-list');
-  if (!el) return;
+// ─── Like handling ────────────────────────────────────────────────────────────
+async function handleLike(btn) {
+  const sessionId = parseInt(btn.dataset.likeSession);
+  if (!sessionId || btn.disabled) return;
+  const iconEl  = btn.querySelector('.like-icon');
+  const countEl = btn.querySelector('.like-count');
+  const wasLiked  = iconEl.textContent === '❤️';
+  const prevCount = parseInt(countEl.textContent) || 0;
+  applyLikeState(btn, !wasLiked, prevCount + (wasLiked ? -1 : 1));
+  btn.disabled = true;
   try {
-    const { sessions } = await api('GET', '/api/artworks/science');
-    if (!sessions.length) {
-      el.innerHTML = `<div class="col-span-full flex flex-col items-center justify-center py-16 text-center">
-        <div class="text-5xl mb-4">🔬</div>
-        <p class="text-zinc-400 text-sm max-w-sm">No science-themed artworks yet — create one with words like
-          <span class="text-violet-300">galaxy</span>, <span class="text-violet-300">atom</span>, or
-          <span class="text-violet-300">evolution</span>.</p>
-      </div>`;
-      applyArchiveCols(); return;
-    }
-    el.innerHTML = sessions.map(artworkCardHtml).join('');
-    bindCardDownloads(el);
-    applyArchiveCols();
-  } catch (err) { console.error('science zone error:', err); }
+    const data = await api('POST', `/api/session/${sessionId}/like`, {});
+    applyLikeState(btn, data.liked, data.likeCount);
+    // Update cached session data
+    const s = sessionDataMap.get(sessionId);
+    if (s) { s.liked_by_me = data.liked; s.like_count = data.likeCount; }
+    // Refresh feed cell counts
+    document.querySelectorAll(`.feed-cell[data-open-post="${sessionId}"] .cell-overlay`).forEach(ov => {
+      ov.innerHTML = `<span>❤️ ${data.likeCount}</span><span>💬 ${s ? (s.comment_count||0) : 0}</span>`;
+    });
+  } catch (err) { applyLikeState(btn, wasLiked, prevCount); alert(err.message); }
+  finally { btn.disabled = false; }
 }
 
-function esc(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function applyLikeState(btn, liked, count) {
+  const iconEl  = btn.querySelector('.like-icon');
+  const countEl = btn.querySelector('.like-count');
+  iconEl.textContent  = liked ? '❤️' : '🤍';
+  countEl.textContent = count;
+  btn.className = 'like-btn pill ' + (liked ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : '');
 }
 
-// ─── Gifts (on-chain tips, NOT in-app credits) ─────────────────────────────────
-let giftCtx = null; // { sessionId, ownerName, ownerPubkey, onSuccess }
+// ─── Gift helpers ──────────────────────────────────────────────────────────────
+function giftDisabledReason(artwork) {
+  if (!artwork || !artwork.owner_pubkey) return "Creator hasn't linked a wallet yet";
+  if (!me || !me.usernode_pubkey) return 'Link a wallet to send gifts';
+  if (artwork.owner_pubkey === me.usernode_pubkey) return "You can't gift your own artwork";
+  if (artwork.owner_user_id != null && me.id != null && artwork.owner_user_id === me.id) return "You can't gift your own artwork";
+  return null;
+}
 
-// Compact display of a per-artwork gift total (e.g. 1.5, or 0 when none yet).
 function formatGiftTotal(n) {
   const v = Number(n) || 0;
   if (!v) return '0';
@@ -1069,9 +1200,6 @@ function truncateAddr(addr) {
   return addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-4)}` : addr;
 }
 
-// The centrally-hosted bridge may expose itself under a few names; resolve
-// whichever object provides the wallet API. Returns null if unavailable
-// (e.g. local dev without SV reachable).
 function getBridge() {
   const candidates = [window.UsernodeBridge, window.usernodeBridge, window.usernode, window.bridge];
   for (const c of candidates) {
@@ -1079,6 +1207,8 @@ function getBridge() {
   }
   return null;
 }
+
+let giftCtx = null;
 
 function openGiftModal(ctx) {
   giftCtx = ctx;
@@ -1099,106 +1229,41 @@ function closeGiftModal() {
   giftCtx = null;
 }
 
-function giftError(msg) {
-  const err = document.getElementById('gift-error');
-  err.textContent = msg;
-  err.classList.remove('hidden');
-}
-
 async function submitGift() {
   if (!giftCtx) return;
   const submit = document.getElementById('gift-submit');
   const err = document.getElementById('gift-error');
   err.classList.add('hidden');
-
   const amount = Number(document.getElementById('gift-amount').value);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return giftError('Enter a positive amount.');
-  }
-
+  if (!Number.isFinite(amount) || amount <= 0) { err.textContent = 'Enter a positive amount.'; err.classList.remove('hidden'); return; }
   const ownerPubkey = giftCtx.ownerPubkey;
-  if (!ownerPubkey) return giftError("This creator hasn't linked a wallet yet.");
-  if (me && me.usernode_pubkey && me.usernode_pubkey === ownerPubkey) {
-    return giftError("You can't gift your own artwork.");
-  }
-
+  if (!ownerPubkey) { err.textContent = "This creator hasn't linked a wallet yet."; err.classList.remove('hidden'); return; }
+  if (me && me.usernode_pubkey && me.usernode_pubkey === ownerPubkey) { err.textContent = "You can't gift your own artwork."; err.classList.remove('hidden'); return; }
   submit.disabled = true; submit.textContent = 'Sending…';
   try {
     let txHash, chainId;
-
     if (me && me.isStaging) {
-      // Staging: no real funds move. Synthesize a tx hash so the gift still
-      // records and totals populate for demos.
       txHash = 'staging-' + giftCtx.sessionId + '-' + Date.now();
       chainId = 'staging';
     } else {
       const bridge = getBridge();
-      if (!bridge) throw new Error('Wallet features are unavailable right now. Try again shortly.');
-
+      if (!bridge) throw new Error('Wallet features are unavailable right now.');
       const senderAddr = await bridge.getNodeAddress();
       if (!senderAddr) throw new Error('No wallet linked. Link a wallet to send gifts.');
       if (senderAddr === ownerPubkey) throw new Error("You can't gift your own artwork.");
-
       const result = await bridge.sendTransaction({ to: ownerPubkey, amount });
       txHash = (result && (result.txHash || result.hash || result.tx_hash)) || result;
       chainId = bridge.chain_id || (result && result.chainId) || null;
       if (!txHash) throw new Error('Transaction did not complete.');
     }
-
-    const data = await api('POST', `/api/session/${giftCtx.sessionId}/gift`, {
-      amount, txHash, toPubkey: ownerPubkey, chainId
-    });
-
-    const newTotal = Number(data.giftTotal || 0);
-    updateGiftBadge(giftCtx.sessionId, newTotal);
-    if (typeof giftCtx.onSuccess === 'function') giftCtx.onSuccess(newTotal);
+    const data = await api('POST', `/api/session/${giftCtx.sessionId}/gift`, { amount, txHash, toPubkey: ownerPubkey, chainId });
+    if (typeof giftCtx.onSuccess === 'function') giftCtx.onSuccess(Number(data.giftTotal || 0));
     closeGiftModal();
   } catch (e) {
-    giftError(e.message || 'Gift failed.');
+    err.textContent = e.message || 'Gift failed.';
+    err.classList.remove('hidden');
     submit.disabled = false; submit.textContent = 'Send Gift';
   }
-}
-
-// Reflect a new gift total on any visible archive card for this session.
-function updateGiftBadge(sessionId, total) {
-  const btn = document.querySelector(`.gift-btn[data-gift-session="${sessionId}"]`);
-  if (btn) {
-    const totalEl = btn.querySelector('.gift-total');
-    if (totalEl) totalEl.textContent = formatGiftTotal(total);
-  }
-}
-
-// ─── Sharing utilities (network share dialogs) ────────────────────────────────
-// Build descriptive share text from an artwork's name + its 5 words.
-// `artwork.words` may be an array (locked view) or a comma string (archive).
-function buildShareText(artwork) {
-  const name = (artwork.name || 'Untitled').trim();
-  const words = Array.isArray(artwork.words)
-    ? artwork.words
-    : String(artwork.words || '').split(',');
-  const wordList = words.map(w => w.trim()).filter(Boolean).join(', ');
-  let text = `"${name}" — AI artwork from 5 words`;
-  if (wordList) text += `: ${wordList}`;
-  text += ' · Made on Artwork Workspace';
-  return text;
-}
-
-// Build network share-dialog URLs from the artwork's PUBLIC image URL.
-// Never share location.href / the ?token= param — that would leak the JWT.
-function shareUrls(imageUrl, text) {
-  const u = encodeURIComponent(imageUrl);
-  return {
-    // Facebook's sharer.php only honors the `u` (URL) param; text is ignored.
-    twitter: `https://twitter.com/intent/tweet?url=${u}&text=${encodeURIComponent(text)}`,
-    facebook: `https://www.facebook.com/sharer/sharer.php?u=${u}`,
-  };
-}
-
-function openShare(network, imageUrl, text) {
-  if (!imageUrl) return;
-  const urls = shareUrls(imageUrl, text);
-  const url = urls[network];
-  if (url) window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -1230,47 +1295,12 @@ async function handleGenerate() {
   }
 }
 
-async function handleLike(btn) {
-  const sessionId = parseInt(btn.dataset.likeSession);
-  if (!sessionId || btn.disabled) return;
-
-  const iconEl  = btn.querySelector('.like-icon');
-  const countEl = btn.querySelector('.like-count');
-
-  // Optimistic toggle
-  const wasLiked = iconEl.textContent === '❤️';
-  const prevCount = parseInt(countEl.textContent) || 0;
-  applyLikeState(btn, !wasLiked, prevCount + (wasLiked ? -1 : 1));
-
-  btn.disabled = true;
-  try {
-    const data = await api('POST', `/api/session/${sessionId}/like`, {});
-    applyLikeState(btn, data.liked, data.likeCount);
-  } catch (err) {
-    applyLikeState(btn, wasLiked, prevCount); // revert
-    alert(err.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-function applyLikeState(btn, liked, count) {
-  const iconEl  = btn.querySelector('.like-icon');
-  const countEl = btn.querySelector('.like-count');
-  iconEl.textContent  = liked ? '❤️' : '🤍';
-  countEl.textContent = count;
-  btn.className = 'like-btn pill ' +
-    (liked ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : '');
-}
-
 // ─── Word edit modal ──────────────────────────────────────────────────────────
 function openWordModal(index, currentWord) {
   if (!activeSession) return;
   wordEditIndex = index;
-
   const currentBid = parseInt(activeSession.current_bid) || 0;
   const minBid     = currentBid ? Math.ceil(currentBid * 1.01) : 1;
-
   document.getElementById('wm-current').textContent  = currentWord;
   document.getElementById('wm-word').value           = currentWord;
   document.getElementById('wm-bid').value            = minBid;
@@ -1287,142 +1317,66 @@ function closeWordModal() {
 }
 
 async function submitWordChange() {
-  const newWord  = document.getElementById('wm-word').value.trim();
+  const newWord   = document.getElementById('wm-word').value.trim();
   const bidAmount = parseInt(document.getElementById('wm-bid').value);
-  const errEl    = document.getElementById('wm-error');
+  const errEl     = document.getElementById('wm-error');
   const submitBtn = document.getElementById('wm-submit');
-
   errEl.classList.add('hidden');
   if (!newWord) { errEl.textContent = 'Word cannot be empty.'; errEl.classList.remove('hidden'); return; }
   if (newWord.length > 30) { errEl.textContent = 'Word must be 30 characters or fewer.'; errEl.classList.remove('hidden'); return; }
   if (!bidAmount || bidAmount < 1) { errEl.textContent = 'Enter a valid bid amount.'; errEl.classList.remove('hidden'); return; }
-
   submitBtn.disabled = true; submitBtn.textContent = 'Submitting…';
   try {
-    const data = await api('POST', `/api/session/${activeSession.id}/change-word`, {
-      wordIndex: wordEditIndex,
-      newWord,
-      bidAmount
-    });
+    const data = await api('POST', `/api/session/${activeSession.id}/change-word`, { wordIndex: wordEditIndex, newWord, bidAmount });
     if (me) { me.credits = data.newBalance; renderHeader(); }
     closeWordModal();
+    // Update displayed words
+    activeSession.words = data.words.join(',');
+    renderWordChips(document.getElementById('word-chips'), data.words, true);
   } catch (err) {
-    errEl.textContent = err.message;
-    errEl.classList.remove('hidden');
+    errEl.textContent = err.message; errEl.classList.remove('hidden');
     submitBtn.disabled = false; submitBtn.textContent = 'Change & Bid';
   }
 }
 
-// ─── Socket ───────────────────────────────────────────────────────────────────
-function initSocket() {
-  socket = io({ auth: { token } });
-
-  socket.on('connect', () => {
-    if (activeSession) socket.emit('join-session', activeSession.id);
-  });
-
-  socket.on('session-created', ({ session }) => {
-    activeSession = session; auctionEnded = false;
-    socket.emit('join-session', session.id);
-    renderHeader(); renderMain();
-  });
-
-  socket.on('bid-placed', data => {
-    if (!activeSession || activeSession.id !== data.sessionId) return;
-    Object.assign(activeSession, {
-      state: 'auction',
-      current_bid: data.amount,
-      current_leader_user_id: data.userId,
-      current_leader_username: data.username,
-      expires_at: data.expiresAt,
-      _remaining: 30
-    });
-    auctionEnded = false;
-    renderMain();
-  });
-
-  socket.on('word-changed', data => {
-    if (!activeSession || activeSession.id !== data.sessionId) return;
-    activeSession.words = data.words.join(',');
-    const editable = activeSession.state === 'active' || activeSession.state === 'auction';
-    renderWordChips(document.getElementById('word-chips'), data.words, editable);
-  });
-
-  socket.on('auction-tick', ({ remaining }) => {
-    if (!activeSession || activeSession.state !== 'auction') return;
-    updateCountdown(remaining);
-  });
-
-  socket.on('auction-ended', data => {
-    if (!activeSession || activeSession.id !== data.sessionId) return;
-    auctionEnded = true; activeSession._remaining = 0;
-    renderAuctionPanel();
-  });
-
-  socket.on('session-locked', async data => {
-    if (activeSession && activeSession.id === data.sessionId) {
-      lockedSessionData = {
-        ...activeSession,
-        image_url: data.imageUrl,
-        prompt: data.prompt,
-        winner_username: data.winnerUsername,
-        owner_username: data.winnerUsername,
-        owner_user_id: data.ownerUserId,
-        owner_pubkey: data.ownerPubkey,
-        gift_total: 0,
-        words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
-      };
-      activeSession = null; auctionEnded = false;
-    }
-    renderHeader(); renderMain();
-    if (lockedSessionData) {
-      renderLockedView(lockedSessionData);
-      document.getElementById('locked-view').classList.remove('hidden');
-    }
-    renderArchive();
-    // A newly-locked science artwork should appear in the zone immediately if
-    // the viewer is currently browsing it.
-    if (currentView === 'science') renderScienceZone();
-  });
+// ─── Create Artwork Modal ─────────────────────────────────────────────────────
+function openCreateModal() {
+  const modal    = document.getElementById('modal');
+  const nameInp  = document.getElementById('modal-name');
+  const wordsInp = document.getElementById('modal-words');
+  const errEl    = document.getElementById('modal-error');
+  nameInp.value = ''; wordsInp.value = randomWords(5).join(' ');
+  updateModalWordCount();
+  errEl.classList.add('hidden');
+  modal.classList.remove('hidden');
+  setTimeout(() => nameInp.focus(), 50);
 }
 
-// ─── Create Artwork Modal ─────────────────────────────────────────────────────
+function updateModalWordCount() {
+  const wordsInp = document.getElementById('modal-words');
+  const nameInp  = document.getElementById('modal-name');
+  const countEl  = document.getElementById('modal-word-count');
+  const createBtn = document.getElementById('modal-create');
+  const words = parseInputWords(wordsInp.value);
+  const count = words.length;
+  countEl.textContent = `${count} / 5`;
+  countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
+    (count === 5 ? 'text-emerald-400' : 'text-zinc-500');
+  createBtn.disabled = !(nameInp.value.trim() && count === 5);
+}
+
 function initModal() {
-  const cta      = document.getElementById('cta-create-artwork');
   const modal    = document.getElementById('modal');
   const cancel   = document.getElementById('modal-cancel');
   const create   = document.getElementById('modal-create');
   const nameInp  = document.getElementById('modal-name');
   const wordsInp = document.getElementById('modal-words');
-  const countEl  = document.getElementById('modal-word-count');
   const errEl    = document.getElementById('modal-error');
   const shuffle  = document.getElementById('modal-shuffle');
 
-  function updateWordCount() {
-    const words = parseInputWords(wordsInp.value);
-    const count = words.length;
-    countEl.textContent = `${count} / 5`;
-    countEl.className = 'absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums ' +
-      (count === 5 ? 'text-emerald-400' : 'text-zinc-500');
-    create.disabled = !(nameInp.value.trim() && count === 5);
-  }
-
-  wordsInp.addEventListener('input', updateWordCount);
-  nameInp.addEventListener('input', updateWordCount);
-
-  cta.addEventListener('click', () => {
-    // Pre-fill the words with a random "fully filled" set so the user can
-    // create in one click; the name is the only thing left to supply.
-    nameInp.value = ''; wordsInp.value = randomWords(5).join(' ');
-    updateWordCount();
-    errEl.classList.add('hidden');
-    modal.classList.remove('hidden');
-    setTimeout(() => nameInp.focus(), 50);
-  });
-  shuffle.addEventListener('click', () => {
-    wordsInp.value = randomWords(5).join(' ');
-    updateWordCount();
-  });
+  wordsInp.addEventListener('input', updateModalWordCount);
+  nameInp.addEventListener('input', updateModalWordCount);
+  shuffle.addEventListener('click', () => { wordsInp.value = randomWords(5).join(' '); updateModalWordCount(); });
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
@@ -1436,114 +1390,226 @@ function initModal() {
       const { session } = await api('POST', '/api/session', { name, words });
       activeSession = session; auctionEnded = false;
       modal.classList.add('hidden');
-      renderHeader(); renderMain();
+      renderHeader();
       socket.emit('join-session', session.id);
+      // Switch to home and open session overlay
+      setTab('home');
+      openSessionOverlay();
     } catch (err) {
       errEl.textContent = err.message; errEl.classList.remove('hidden');
-    } finally { create.disabled = false; create.textContent = 'Create'; updateWordCount(); }
+    } finally { create.disabled = false; create.textContent = 'Create'; updateModalWordCount(); }
   }
   create.addEventListener('click', doCreate);
   nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') wordsInp.focus(); });
   wordsInp.addEventListener('keydown', e => { if (e.key === 'Enter') doCreate(); });
 }
 
-// ─── Word Edit Modal init ─────────────────────────────────────────────────────
-function initWordModal() {
-  document.getElementById('wm-cancel').addEventListener('click', closeWordModal);
-  document.getElementById('word-modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('word-modal')) closeWordModal();
-  });
-  document.getElementById('wm-submit').addEventListener('click', submitWordChange);
-  document.getElementById('wm-word').addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('wm-bid').focus();
-  });
-  document.getElementById('wm-bid').addEventListener('keydown', e => {
-    if (e.key === 'Enter') submitWordChange();
-  });
-}
+// ─── Socket ───────────────────────────────────────────────────────────────────
+function initSocket() {
+  socket = io({ auth: { token } });
 
-// ─── Gift Modal init ──────────────────────────────────────────────────────────
-function initGiftModal() {
-  document.getElementById('gift-cancel').addEventListener('click', closeGiftModal);
-  document.getElementById('gift-modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('gift-modal')) closeGiftModal();
+  socket.on('connect', () => {
+    if (activeSession) socket.emit('join-session', activeSession.id);
   });
-  document.getElementById('gift-submit').addEventListener('click', submitGift);
-  document.getElementById('gift-amount').addEventListener('keydown', e => {
-    if (e.key === 'Enter') submitGift();
+
+  socket.on('session-created', ({ session }) => {
+    activeSession = session; auctionEnded = false;
+    socket.emit('join-session', session.id);
+    renderHeader();
+    if (currentTab === 'home') renderLiveBanner();
+  });
+
+  socket.on('bid-placed', data => {
+    if (!activeSession || activeSession.id !== data.sessionId) return;
+    Object.assign(activeSession, {
+      state: 'auction',
+      current_bid: data.amount,
+      current_leader_user_id: data.userId,
+      current_leader_username: data.username,
+      expires_at: data.expiresAt,
+      _remaining: 30
+    });
+    auctionEnded = false;
+    if (document.getElementById('session-view').style.display !== 'none') {
+      renderAuctionPanel();
+    }
+    if (currentTab === 'home') renderLiveBanner();
+  });
+
+  socket.on('word-changed', data => {
+    if (!activeSession || activeSession.id !== data.sessionId) return;
+    activeSession.words = data.words.join(',');
+    const sv = document.getElementById('session-view');
+    if (sv.style.display !== 'none') {
+      renderWordChips(document.getElementById('word-chips'), data.words, true);
+    }
+  });
+
+  socket.on('auction-tick', ({ remaining }) => {
+    if (!activeSession || activeSession.state !== 'auction') return;
+    updateCountdown(remaining);
+  });
+
+  socket.on('auction-ended', data => {
+    if (!activeSession || activeSession.id !== data.sessionId) return;
+    auctionEnded = true; activeSession._remaining = 0;
+    if (document.getElementById('session-view').style.display !== 'none') {
+      renderAuctionPanel();
+    }
+  });
+
+  socket.on('session-locked', async data => {
+    if (activeSession && activeSession.id === data.sessionId) {
+      lockedSessionData = {
+        ...activeSession,
+        image_url: data.imageUrl,
+        prompt: data.prompt,
+        winner_username: data.winnerUsername,
+        owner_username: data.winnerUsername,
+        owner_user_id: data.ownerUserId,
+        owner_pubkey: data.ownerPubkey,
+        gift_total: 0,
+        comment_count: 0,
+        liked_by_me: false,
+        like_count: 0,
+        words: Array.isArray(data.words) ? data.words.join(',') : (activeSession.words || '')
+      };
+      sessionDataMap.set(data.sessionId, lockedSessionData);
+      activeSession = null; auctionEnded = false;
+    }
+    // Close session overlay
+    closeSessionOverlay();
+    renderHeader();
+    if (currentTab === 'home') {
+      renderLiveBanner();
+      renderLockedBanner();
+      renderStoriesRow();
+      renderFeed();
+    }
   });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   initModal();
-  initWordModal();
   initLightbox();
   initSocket();
 
-  // One delegated handler for image/like/gift clicks, shared by the archive
-  // and Science Zone grids (both render identical cards via artworkCardHtml).
-  function onGridClick(e) {
-    if (e.target.matches('img') && e.target.src) { openLightbox(e.target.src); return; }
-    const sb = e.target.closest('.share-btn');
-    if (sb) { openShare(sb.dataset.share, sb.dataset.image, sb.dataset.text); return; }
-    const likeBtn = e.target.closest('.like-btn');
-    if (likeBtn) { handleLike(likeBtn); return; }
-    const giftBtn = e.target.closest('.gift-btn');
-    if (giftBtn && !giftBtn.disabled) {
-      openGiftModal({
-        sessionId: parseInt(giftBtn.dataset.giftSession),
-        ownerName: giftBtn.dataset.ownerName || '',
-        ownerPubkey: giftBtn.dataset.ownerPubkey || ''
-      });
-    }
-  }
-  document.getElementById('archive-list').addEventListener('click', onGridClick);
-  document.getElementById('science-list').addEventListener('click', onGridClick);
-
-  // View toggle (Workspace / Science Zone)
-  loadView();
-  renderViewToggle();
-  document.getElementById('view-toggle').addEventListener('click', e => {
-    const btn = e.target.closest('button[data-view]');
-    if (btn) setView(btn.getAttribute('data-view'));
+  // Bottom nav tab switching
+  document.getElementById('bottom-nav').addEventListener('click', e => {
+    const btn = e.target.closest('.tab-btn');
+    if (btn && btn.dataset.tab) { setTab(btn.dataset.tab); return; }
   });
 
-  initGiftModal();
+  // Upload button always opens create modal
+  document.getElementById('upload-tab-btn').addEventListener('click', openCreateModal);
 
-  // Share controls live in both the locked view and archive cards — handle
-  // them with one delegated listener.
-  document.addEventListener('click', e => {
+  // Session overlay back button
+  document.getElementById('sv-back').addEventListener('click', closeSessionOverlay);
+
+  // Word modal
+  document.getElementById('wm-cancel').addEventListener('click', closeWordModal);
+  document.getElementById('word-modal').addEventListener('click', e => { if (e.target === document.getElementById('word-modal')) closeWordModal(); });
+  document.getElementById('wm-submit').addEventListener('click', submitWordChange);
+  document.getElementById('wm-word').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('wm-bid').focus(); });
+  document.getElementById('wm-bid').addEventListener('keydown', e => { if (e.key === 'Enter') submitWordChange(); });
+
+  // Gift modal
+  document.getElementById('gift-cancel').addEventListener('click', closeGiftModal);
+  document.getElementById('gift-modal').addEventListener('click', e => { if (e.target === document.getElementById('gift-modal')) closeGiftModal(); });
+  document.getElementById('gift-submit').addEventListener('click', submitGift);
+  document.getElementById('gift-amount').addEventListener('keydown', e => { if (e.key === 'Enter') submitGift(); });
+
+  // Post-detail modal close
+  document.getElementById('pm-close').addEventListener('click', closePostDetail);
+  document.getElementById('post-modal').addEventListener('click', e => { if (e.target === document.getElementById('post-modal')) closePostDetail(); });
+  document.getElementById('post-modal').addEventListener('keydown', e => { if (e.key === 'Escape') closePostDetail(); });
+
+  // Post-detail like button
+  document.getElementById('pm-like-btn').addEventListener('click', e => {
+    const btn = e.currentTarget;
+    handleLike(btn);
+  });
+
+  // Delegated click handler for feed cells and banners (open post detail)
+  document.getElementById('app-main').addEventListener('click', e => {
+    // Lightbox for images inside post-detail is handled separately
+    const cell = e.target.closest('[data-open-post]');
+    if (cell) {
+      const id = parseInt(cell.dataset.openPost);
+      if (id) { openPostDetail(id); return; }
+    }
+
+    // Story bubbles
+    const storyBtn = e.target.closest('.story-btn');
+    if (storyBtn) {
+      const sid = parseInt(storyBtn.dataset.storySession);
+      if (sid) { openPostDetail(sid); return; }
+    }
+  });
+
+  // Delegated click handler for share/native share inside post-detail modal
+  document.getElementById('post-modal').addEventListener('click', e => {
+    const nsBtn = e.target.closest('[data-native-share]');
+    if (nsBtn) {
+      const id = parseInt(nsBtn.dataset.nativeShare);
+      const title = nsBtn.dataset.shareTitle || '';
+      navigator.share({ title, url: shareUrlFor(id) }).catch(() => {});
+      return;
+    }
     const copyBtn = e.target.closest('[data-share-copy]');
     if (copyBtn) { copyShareLink(parseInt(copyBtn.dataset.shareCopy), copyBtn); return; }
     const xBtn = e.target.closest('[data-share-x]');
     if (xBtn) { shareToX(parseInt(xBtn.dataset.shareX), xBtn.dataset.shareTitle); return; }
-    const fbBtn = e.target.closest('[data-share-fb]');
-    if (fbBtn) { shareToFacebook(parseInt(fbBtn.dataset.shareFb)); return; }
   });
 
-  loadArchiveCols();
-  ['archive-cols-group', 'science-cols-group'].forEach(id => {
-    document.getElementById(id)?.addEventListener('click', e => {
-      const btn = e.target.closest('button[data-archive-col]');
-      if (btn) setArchiveCols(btn.getAttribute('data-archive-col'));
-    });
+  // Global share delegation (for share buttons rendered outside post modal if any)
+  document.addEventListener('click', e => {
+    const copyBtn = e.target.closest('[data-share-copy]');
+    if (copyBtn && !e.target.closest('#post-modal')) { copyShareLink(parseInt(copyBtn.dataset.shareCopy), copyBtn); return; }
+    const xBtn = e.target.closest('[data-share-x]');
+    if (xBtn && !e.target.closest('#post-modal')) { shareToX(parseInt(xBtn.dataset.shareX), xBtn.dataset.shareTitle); return; }
   });
-  window.addEventListener('resize', onArchiveResize);
-  applyArchiveCols();
 
-  // Archive search / filter / sort controls. Search input is debounced so we
-  // don't refetch on every keystroke; the dropdowns refetch immediately.
-  let _archiveSearchTimer;
-  document.getElementById('archive-search')?.addEventListener('input', () => {
-    clearTimeout(_archiveSearchTimer);
-    _archiveSearchTimer = setTimeout(renderArchive, 300);
+  // Notifications tab — open post detail from notification rows
+  document.getElementById('notifications-list').addEventListener('click', e => {
+    const row = e.target.closest('[data-open-post]');
+    if (row) {
+      const id = parseInt(row.dataset.openPost);
+      if (id) {
+        // If not in sessionDataMap, we need to fetch it
+        if (sessionDataMap.has(id)) { openPostDetail(id); }
+        else {
+          api('GET', '/api/sessions/locked?status=all').then(data => {
+            data.sessions.forEach(s => sessionDataMap.set(s.id, s));
+            if (sessionDataMap.has(id)) openPostDetail(id);
+          }).catch(() => {});
+        }
+      }
+    }
   });
-  document.getElementById('archive-status')?.addEventListener('change', renderArchive);
-  document.getElementById('archive-sort')?.addEventListener('change', renderArchive);
 
+  // Filter chips in search tab
+  document.getElementById('filter-chips').addEventListener('click', e => {
+    const btn = e.target.closest('.filter-chip');
+    if (!btn) return;
+    searchFilter = btn.dataset.filter;
+    updateFilterChips();
+    fetchAndRenderSearchResults();
+  });
+
+  // Search input debounce
+  let _searchTimer;
+  document.getElementById('search-input')?.addEventListener('input', () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(fetchAndRenderSearchResults, 300);
+  });
+  document.getElementById('search-sort')?.addEventListener('change', fetchAndRenderSearchResults);
+
+  // Load user
   try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
 
+  // Load active session
   try {
     const { session } = await api('GET', '/api/session/active');
     activeSession = session;
@@ -1560,9 +1626,7 @@ async function init() {
   } catch(e) { console.error('session error:', e); }
 
   renderHeader();
-  renderMain();
-  renderArchive();
-  applyView(); // honor the persisted view (renders the Science Zone if selected)
+  setTab('home');
 }
 
 init();

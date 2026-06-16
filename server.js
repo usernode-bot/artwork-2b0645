@@ -300,7 +300,8 @@ app.get('/api/sessions/locked', async (req, res) => {
         g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
-        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total,
+        (SELECT COUNT(*) FROM artwork_comments c WHERE c.session_id = s.id)::int AS comment_count
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
@@ -325,7 +326,8 @@ app.get('/api/artworks/science', async (req, res) => {
         g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
-        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total,
+        (SELECT COUNT(*) FROM artwork_comments c WHERE c.session_id = s.id)::int AS comment_count
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
@@ -1043,6 +1045,80 @@ app.get('/a/:id', async (req, res) => {
   }
 });
 
+// Stories row: most recent locked artwork per unique creator, ordered by recency.
+app.get('/api/stories', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT username, image_url, session_id, locked_at
+      FROM (
+        SELECT DISTINCT ON (s.creator_username)
+          s.creator_username AS username,
+          g.image_url,
+          s.id AS session_id,
+          s.locked_at
+        FROM sessions s
+        LEFT JOIN generated_artworks g ON g.session_id = s.id
+        WHERE s.state = 'locked'
+        ORDER BY s.creator_username, s.locked_at DESC
+      ) sub
+      ORDER BY locked_at DESC
+      LIMIT 15
+    `);
+    res.json({ stories: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Current user's completed artworks (for Profile tab).
+app.get('/api/me/artworks', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT s.*, a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
+        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total,
+        (SELECT COUNT(*) FROM artwork_comments c WHERE c.session_id = s.id)::int AS comment_count
+      FROM sessions s
+      LEFT JOIN auctions a ON a.session_id = s.id
+      LEFT JOIN generated_artworks g ON g.session_id = s.id
+      WHERE s.creator_user_id = $1 AND s.state = 'locked'
+      ORDER BY s.created_at DESC
+      LIMIT 50
+    `, [req.user.id]);
+    res.json({ sessions: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Notifications: likes on the current user's artworks + new artworks by others.
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT 'like' AS type, al.username, al.created_at,
+             s.id AS session_id, s.name AS session_name
+      FROM artwork_likes al
+      JOIN sessions s ON s.id = al.session_id
+      WHERE s.creator_user_id = $1 AND al.user_id <> $1
+
+      UNION ALL
+
+      SELECT 'new_artwork' AS type, s.creator_username AS username, s.locked_at AS created_at,
+             s.id AS session_id, s.name AS session_name
+      FROM sessions s
+      WHERE s.state = 'locked' AND s.creator_user_id <> $1
+
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT 20
+    `, [req.user.id]);
+    res.json({ notifications: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Static + HTML shell ──────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -1150,6 +1226,16 @@ async function start() {
   `);
   await pool.query(`COMMENT ON TABLE gifts IS 'staging:private'`);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS artwork_comments (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL,
+      username VARCHAR(255) NOT NULL,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS artwork_likes (
       id SERIAL PRIMARY KEY,
       session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -1160,25 +1246,45 @@ async function start() {
     )
   `);
 
-  // Staging seed: guarantee the Science Zone has at least one science-themed
-  // artwork to browse in PR previews (cloned prod data may not contain any).
-  // No-op in production; idempotent via the fixed demo name.
+  // Staging seeds: populate Stories row, feed grid, and Notifications tab with
+  // demo content from multiple fake users. All idempotent via session name.
+  // No-op in production.
   if (IS_STAGING) {
-    const SEED_NAME = '[demo] Quantum Galaxy';
-    const SEED_WORDS = 'galaxy,quantum,nebula,dna,gravity';
-    const { rows: existing } = await pool.query('SELECT id FROM sessions WHERE name = $1 LIMIT 1', [SEED_NAME]);
-    if (!existing.length) {
-      const { rows: sRows } = await pool.query(
-        `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, locked_at)
-         VALUES ($1, 0, 'demo_scientist', 'locked', $2, NOW()) RETURNING id`,
-        [SEED_NAME, SEED_WORDS]
-      );
-      const sid = sRows[0].id;
-      await pool.query(
-        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt)
-         VALUES ($1, 0, 'demo_scientist', $2, $3)`,
-        [sid, `https://picsum.photos/seed/sci-${sid}/512/512`, `A beautiful artwork inspired by: ${SEED_WORDS}`]
-      );
+    const DEMO_SESSIONS = [
+      { name: '[demo] Quantum Galaxy',  words: 'galaxy,quantum,nebula,dna,gravity',         user: 'demo_scientist',    uid: -10, minsAgo: 5 },
+      { name: '[demo] Ocean Bloom',     words: 'ocean,bloom,tide,coral,mist',                user: 'staging-demo-alice', uid: -11, minsAgo: 12 },
+      { name: '[demo] Fire Storm',      words: 'fire,storm,ember,thunder,ash',               user: 'staging-demo-bob',  uid: -12, minsAgo: 25 },
+      { name: '[demo] Crystal Cave',    words: 'crystal,obsidian,jade,prism,shadow',         user: 'staging-demo-carol', uid: -13, minsAgo: 45 },
+      { name: '[demo] Cosmic Dust',     words: 'cosmos,star,nebula,spectral,eclipse',        user: 'staging-demo-dave', uid: -14, minsAgo: 80 },
+      { name: '[demo] Desert Mirage',   words: 'desert,mirage,dusk,amber,horizon',           user: 'staging-demo-eve',  uid: -15, minsAgo: 120 },
+    ];
+
+    for (const demo of DEMO_SESSIONS) {
+      const { rows: existing } = await pool.query('SELECT id FROM sessions WHERE name = $1 LIMIT 1', [demo.name]);
+      if (!existing.length) {
+        const lockedAt = new Date(Date.now() - demo.minsAgo * 60 * 1000);
+        const { rows: sRows } = await pool.query(
+          `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, locked_at)
+           VALUES ($1, $2, $3, 'locked', $4, $5) RETURNING id`,
+          [demo.name, demo.uid, demo.user, demo.words, lockedAt]
+        );
+        const sid = sRows[0].id;
+        await pool.query(
+          `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [sid, demo.uid, demo.user,
+           `https://picsum.photos/seed/demo-${demo.user}/512/512`,
+           `A beautiful artwork inspired by: ${demo.words}`]
+        );
+        // Seed some likes so heart counts are non-zero
+        const likers = [-21, -22, -23].filter(lid => lid !== demo.uid);
+        for (const lid of likers) {
+          await pool.query(
+            `INSERT INTO artwork_likes (session_id, user_id, username) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [sid, lid, `staging-liker-${Math.abs(lid)}`]
+          );
+        }
+      }
     }
   }
 
