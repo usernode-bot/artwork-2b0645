@@ -252,6 +252,7 @@
     <div class="flex items-center flex-shrink-0 gap-3">
       <span id="credit-display" class="text-sm font-semibold tabular-nums text-violet-300 bg-violet-950/50 border border-violet-800/40 px-3 py-1 rounded-full">💎 --</span>
       <span id="username-display" class="text-sm text-zinc-400 hidden sm:inline"></span>
+      <button id="header-create-btn" class="btn btn-primary hidden">🎨 Create Artwork</button>
     </div>
   </header>
 
@@ -599,6 +600,7 @@ function renderHeader() {
   document.getElementById('username-display').textContent = me ? `@${me.username}` : '';
   document.getElementById('credit-display').textContent   = me ? `💎 ${me.credits}` : '💎 --';
   document.getElementById('generation-stub-banner').classList.toggle('hidden', !(me && me.generationStubbed));
+  document.getElementById('header-create-btn').classList.toggle('hidden', !!activeSession);
 }
 
 // ─── Tab management ───────────────────────────────────────────────────────────
@@ -1377,6 +1379,7 @@ function initModal() {
   wordsInp.addEventListener('input', updateModalWordCount);
   nameInp.addEventListener('input', updateModalWordCount);
   shuffle.addEventListener('click', () => { wordsInp.value = randomWords(5).join(' '); updateModalWordCount(); });
+  document.getElementById('header-create-btn').addEventListener('click', openCreateModal);
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
