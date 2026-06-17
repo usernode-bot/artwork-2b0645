@@ -13,80 +13,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
-// --- Replicate text-to-image generation -----------------------------------
-// The artwork image is generated from the session's 10 words via Replicate's
-// HTTP predictions API (no SDK — plain fetch). REPLICATE_API_KEY is declared in
-// dapp.json as optional; when it's absent (e.g. local dev) we fall back to the
-// picsum stub below so the app still works without a key.
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
-// Pinned model version so output style / input schema don't drift under us.
-// stability-ai/sdxl — a fast, inexpensive text-to-image model.
-const REPLICATE_MODEL_VERSION = '7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bda';
-// Square edge requested from the model. 1024 front-loads enough resolution that
-// the OG card (1200) and download proxy (2048) don't need provider-side upscaling.
-const GENERATED_IMAGE_SIZE = 1024;
-// Overall budget for create + poll before we give up and let the winner retry.
-const REPLICATE_TIMEOUT_MS = 60000;
-const REPLICATE_POLL_INTERVAL_MS = 1500;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Generate an image from `prompt` via Replicate and return its hosted URL.
-// Throws on auth/API error, failed prediction, or timeout — callers treat any
-// throw as "generation failed, leave the session recoverable".
-async function generateImageWithReplicate(prompt) {
-  const startedAt = Date.now();
-  const createRes = await fetch('https://api.replicate.com/v1/predictions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${REPLICATE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      version: REPLICATE_MODEL_VERSION,
-      input: {
-        prompt,
-        width: GENERATED_IMAGE_SIZE,
-        height: GENERATED_IMAGE_SIZE,
-      },
-    }),
-  });
-
-  if (!createRes.ok) {
-    const detail = await createRes.text().catch(() => '');
-    throw new Error(`Replicate create failed (${createRes.status}): ${detail.slice(0, 300)}`);
-  }
-
-  let prediction = await createRes.json();
-  const pollUrl = prediction?.urls?.get;
-
-  while (prediction.status !== 'succeeded') {
-    if (prediction.status === 'failed' || prediction.status === 'canceled') {
-      throw new Error(`Replicate prediction ${prediction.status}: ${prediction.error || 'no detail'}`);
-    }
-    if (Date.now() - startedAt > REPLICATE_TIMEOUT_MS) {
-      throw new Error('Replicate prediction timed out');
-    }
-    if (!pollUrl) throw new Error('Replicate response missing poll URL');
-    await sleep(REPLICATE_POLL_INTERVAL_MS);
-    const pollRes = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${REPLICATE_API_KEY}` },
-    });
-    if (!pollRes.ok) {
-      const detail = await pollRes.text().catch(() => '');
-      throw new Error(`Replicate poll failed (${pollRes.status}): ${detail.slice(0, 300)}`);
-    }
-    prediction = await pollRes.json();
-  }
-
-  // SDXL returns an array of output URLs; some models return a bare string.
-  const output = prediction.output;
-  const imageUrl = Array.isArray(output) ? output[0] : output;
-  if (!imageUrl || typeof imageUrl !== 'string') {
-    throw new Error('Replicate succeeded but returned no image URL');
-  }
-  return imageUrl;
-}
 
 const PUBLIC_API_PATHS = new Set(['/health']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
@@ -180,6 +107,56 @@ async function ensureUserCredits(userId, username) {
 function parseWords(input) {
   if (Array.isArray(input)) return input.map(w => String(w).trim()).filter(Boolean);
   return String(input || '').split(/[\s,]+/).map(w => w.trim()).filter(Boolean);
+}
+
+// ─── Image generation ─────────────────────────────────────────────────────────
+async function generateImageWithReplicate(prompt) {
+  const key = process.env.REPLICATE_API_KEY;
+  if (!key) {
+    console.log('[generate] REPLICATE_API_KEY not set — using placeholder');
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const resp = await fetch(
+      'https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'wait'
+        },
+        body: JSON.stringify({ input: { prompt, aspect_ratio: '1:1' } }),
+        signal: controller.signal
+      }
+    );
+
+    if (!resp.ok) {
+      console.warn(`[generate] Replicate returned ${resp.status} — falling back to placeholder`);
+      return null;
+    }
+
+    const prediction = await resp.json();
+    if (prediction.status !== 'succeeded' || !Array.isArray(prediction.output) || !prediction.output[0]) {
+      console.warn(`[generate] Replicate prediction status: ${prediction.status} — falling back to placeholder`);
+      return null;
+    }
+
+    return prediction.output[0];
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      console.warn('[generate] Replicate timed out after 60s — falling back to placeholder');
+    } else {
+      console.warn('[generate] Replicate error:', err.message, '— falling back to placeholder');
+    }
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // ─── Science Zone classification ────────────────────────────────────────────────
