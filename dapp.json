@@ -2,9 +2,10 @@
   "secrets": [
     {
       "key": "REPLICATE_API_KEY",
-      "description": "Replicate API key for AI image generation (wired up later to replace stub)",
-      "required": false,
-      "sensitive": true
+      "description": "Replicate API key for AI image generation. Sign up free at replicate.com and copy your token from replicate.com/account/api-tokens.",
+      "required": true,
+      "private": true,
+      "staging_default": "dummy_replicate_key"
     }
   ]
 }

@@ -13,80 +13,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
-// --- Replicate text-to-image generation -----------------------------------
-// The artwork image is generated from the session's 10 words via Replicate's
-// HTTP predictions API (no SDK — plain fetch). REPLICATE_API_KEY is declared in
-// dapp.json as optional; when it's absent (e.g. local dev) we fall back to the
-// picsum stub below so the app still works without a key.
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
-// Pinned model version so output style / input schema don't drift under us.
-// stability-ai/sdxl — a fast, inexpensive text-to-image model.
-const REPLICATE_MODEL_VERSION = '7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bda';
-// Square edge requested from the model. 1024 front-loads enough resolution that
-// the OG card (1200) and download proxy (2048) don't need provider-side upscaling.
-const GENERATED_IMAGE_SIZE = 1024;
-// Overall budget for create + poll before we give up and let the winner retry.
-const REPLICATE_TIMEOUT_MS = 60000;
-const REPLICATE_POLL_INTERVAL_MS = 1500;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Generate an image from `prompt` via Replicate and return its hosted URL.
-// Throws on auth/API error, failed prediction, or timeout — callers treat any
-// throw as "generation failed, leave the session recoverable".
-async function generateImageWithReplicate(prompt) {
-  const startedAt = Date.now();
-  const createRes = await fetch('https://api.replicate.com/v1/predictions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${REPLICATE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      version: REPLICATE_MODEL_VERSION,
-      input: {
-        prompt,
-        width: GENERATED_IMAGE_SIZE,
-        height: GENERATED_IMAGE_SIZE,
-      },
-    }),
-  });
-
-  if (!createRes.ok) {
-    const detail = await createRes.text().catch(() => '');
-    throw new Error(`Replicate create failed (${createRes.status}): ${detail.slice(0, 300)}`);
-  }
-
-  let prediction = await createRes.json();
-  const pollUrl = prediction?.urls?.get;
-
-  while (prediction.status !== 'succeeded') {
-    if (prediction.status === 'failed' || prediction.status === 'canceled') {
-      throw new Error(`Replicate prediction ${prediction.status}: ${prediction.error || 'no detail'}`);
-    }
-    if (Date.now() - startedAt > REPLICATE_TIMEOUT_MS) {
-      throw new Error('Replicate prediction timed out');
-    }
-    if (!pollUrl) throw new Error('Replicate response missing poll URL');
-    await sleep(REPLICATE_POLL_INTERVAL_MS);
-    const pollRes = await fetch(pollUrl, {
-      headers: { 'Authorization': `Bearer ${REPLICATE_API_KEY}` },
-    });
-    if (!pollRes.ok) {
-      const detail = await pollRes.text().catch(() => '');
-      throw new Error(`Replicate poll failed (${pollRes.status}): ${detail.slice(0, 300)}`);
-    }
-    prediction = await pollRes.json();
-  }
-
-  // SDXL returns an array of output URLs; some models return a bare string.
-  const output = prediction.output;
-  const imageUrl = Array.isArray(output) ? output[0] : output;
-  if (!imageUrl || typeof imageUrl !== 'string') {
-    throw new Error('Replicate succeeded but returned no image URL');
-  }
-  return imageUrl;
-}
 
 const PUBLIC_API_PATHS = new Set(['/health']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
@@ -370,6 +297,56 @@ async function generateSuggestions(userId, count, offset) {
   return { suggestions, basis };
 }
 
+// ─── Image generation ─────────────────────────────────────────────────────────
+async function generateImageWithReplicate(prompt) {
+  const key = process.env.REPLICATE_API_KEY;
+  if (!key) {
+    console.log('[generate] REPLICATE_API_KEY not set — using placeholder');
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const resp = await fetch(
+      'https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'wait'
+        },
+        body: JSON.stringify({ input: { prompt, aspect_ratio: '1:1' } }),
+        signal: controller.signal
+      }
+    );
+
+    if (!resp.ok) {
+      console.warn(`[generate] Replicate returned ${resp.status} — falling back to placeholder`);
+      return null;
+    }
+
+    const prediction = await resp.json();
+    if (prediction.status !== 'succeeded' || !Array.isArray(prediction.output) || !prediction.output[0]) {
+      console.warn(`[generate] Replicate prediction status: ${prediction.status} — falling back to placeholder`);
+      return null;
+    }
+
+    return prediction.output[0];
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      console.warn('[generate] Replicate timed out after 60s — falling back to placeholder');
+    } else {
+      console.warn('[generate] Replicate error:', err.message, '— falling back to placeholder');
+    }
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // ─── Science Zone classification ────────────────────────────────────────────────
 // Curated (intentionally NOT exhaustive) vocabulary of science terms. A locked
 // artwork qualifies for the Science Zone when at least one of its 5 inspiration
@@ -485,10 +462,11 @@ app.get('/api/sessions/locked', async (req, res) => {
 
     const { rows } = await pool.query(`
       SELECT s.*, a.current_bid as winning_bid, a.current_leader_username as winner_username,
-        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username, g.source,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
-        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total,
+        (SELECT COUNT(*) FROM artwork_comments c WHERE c.session_id = s.id)::int AS comment_count
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
@@ -513,7 +491,8 @@ app.get('/api/artworks/science', async (req, res) => {
         g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
         (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
         EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
-        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total,
+        (SELECT COUNT(*) FROM artwork_comments c WHERE c.session_id = s.id)::int AS comment_count
       FROM sessions s
       LEFT JOIN auctions a ON a.session_id = s.id
       LEFT JOIN generated_artworks g ON g.session_id = s.id
@@ -593,7 +572,7 @@ async function getLockedArtwork(sessionId) {
   const { rows } = await pool.query(`
     SELECT s.id, s.name, s.creator_username, s.state, s.words,
       a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
-      g.image_url, g.prompt,
+      g.image_url, g.prompt, g.source,
       (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count
     FROM sessions s
     LEFT JOIN auctions a ON a.session_id = s.id
@@ -933,8 +912,8 @@ app.post('/api/generate', async (req, res) => {
 
     // Only persist + lock + broadcast once we have a real image URL in hand.
     await pool.query(
-      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt, canvas_snapshot, owner_pubkey, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'ai')`,
       [sessionId, req.user.id, req.user.username, imageUrl, prompt, null, req.user.usernode_pubkey ?? null]
     );
 
@@ -947,7 +926,8 @@ app.post('/api/generate', async (req, res) => {
       words: wordsStr.split(','),
       winnerUsername: req.user.username,
       ownerUserId: req.user.id,
-      ownerPubkey: req.user.usernode_pubkey ?? null
+      ownerPubkey: req.user.usernode_pubkey ?? null,
+      source: 'ai'
     });
 
     res.json({ ok: true, imageUrl, prompt });
@@ -1143,7 +1123,8 @@ app.get('/share-api/:id', async (req, res) => {
       image_url: artwork.image_url,
       prompt: artwork.prompt,
       words: (artwork.words || '').split(',').filter(Boolean),
-      like_count: artwork.like_count || 0
+      like_count: artwork.like_count || 0,
+      source: artwork.source || 'ai'
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1209,6 +1190,15 @@ app.get('/a/:id', async (req, res) => {
       ? `<img class="art" src="${eImg}" alt="${eName}">`
       : '';
 
+    // Provenance badge — 'human' shows the warm "Human-made" pill; anything
+    // else (including 'ai', null, or an unknown value) falls back to the
+    // violet "AI-generated" pill.
+    const isHuman = artwork.source === 'human';
+    const badgeLabel = isHuman ? '🎨 Human-made' : '🤖 AI-generated';
+    const badgeTitle = isHuman ? 'Human-made artwork' : 'AI-generated artwork';
+    const badgeClass = isHuman ? 'badge badge-human' : 'badge badge-ai';
+    const sourceBadge = `<span class="${badgeClass}" title="${escapeHtml(badgeTitle)}" aria-label="${escapeHtml(badgeTitle)}">${badgeLabel}</span>`;
+
     res.type('html').send(`<!doctype html>
 <html lang="en">
 <head>
@@ -1247,6 +1237,10 @@ app.get('/a/:id', async (req, res) => {
     .chips { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 4px; }
     .chip { display:inline-flex; padding:5px 12px; border-radius:9999px; font-size:.78rem; font-weight:500;
       background:rgba(124,58,237,.15); border:1px solid rgba(124,58,237,.35); color:#c4b5fd; }
+    .badge { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border-radius:9999px;
+      font-size:.72rem; font-weight:600; margin:6px 0 2px; }
+    .badge-ai { background:rgba(124,58,237,.15); border:1px solid rgba(124,58,237,.4); color:#c4b5fd; }
+    .badge-human { background:rgba(245,158,11,.15); border:1px solid rgba(245,158,11,.4); color:#fcd34d; }
     .cta { display:block; text-align:center; margin-top:20px; padding:12px 16px; background:var(--accent);
       color:#fff; border-radius:10px; text-decoration:none; font-size:.92rem; font-weight:600; transition:background .12s; }
     .cta:hover { background:#8b5cf6; }
@@ -1260,6 +1254,7 @@ app.get('/a/:id', async (req, res) => {
       <div class="body">
         <h1>${eName}</h1>
         <p class="meta">by <span class="hl">@${eCreator}</span></p>
+        ${sourceBadge}
         ${winnerLine}
         <div class="chips">${wordChips}</div>
         <a class="cta" href="${eUsernodeUrl}">Open in Usernode →</a>
@@ -1271,6 +1266,80 @@ app.get('/a/:id', async (req, res) => {
   } catch (err) {
     console.error('share page error:', err);
     renderShareNotFound(res);
+  }
+});
+
+// Stories row: most recent locked artwork per unique creator, ordered by recency.
+app.get('/api/stories', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT username, image_url, session_id, locked_at
+      FROM (
+        SELECT DISTINCT ON (s.creator_username)
+          s.creator_username AS username,
+          g.image_url,
+          s.id AS session_id,
+          s.locked_at
+        FROM sessions s
+        LEFT JOIN generated_artworks g ON g.session_id = s.id
+        WHERE s.state = 'locked'
+        ORDER BY s.creator_username, s.locked_at DESC
+      ) sub
+      ORDER BY locked_at DESC
+      LIMIT 15
+    `);
+    res.json({ stories: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Current user's completed artworks (for Profile tab).
+app.get('/api/me/artworks', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT s.*, a.current_bid AS winning_bid, a.current_leader_username AS winner_username,
+        g.image_url, g.prompt, g.owner_pubkey, g.owner_username,
+        (SELECT COUNT(*) FROM artwork_likes l WHERE l.session_id = s.id)::int AS like_count,
+        EXISTS (SELECT 1 FROM artwork_likes l WHERE l.session_id = s.id AND l.user_id = $1) AS liked_by_me,
+        (SELECT COALESCE(SUM(amount), 0) FROM gifts gf WHERE gf.session_id = s.id AND gf.status <> 'failed') AS gift_total,
+        (SELECT COUNT(*) FROM artwork_comments c WHERE c.session_id = s.id)::int AS comment_count
+      FROM sessions s
+      LEFT JOIN auctions a ON a.session_id = s.id
+      LEFT JOIN generated_artworks g ON g.session_id = s.id
+      WHERE s.creator_user_id = $1 AND s.state = 'locked'
+      ORDER BY s.created_at DESC
+      LIMIT 50
+    `, [req.user.id]);
+    res.json({ sessions: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Notifications: likes on the current user's artworks + new artworks by others.
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT 'like' AS type, al.username, al.created_at,
+             s.id AS session_id, s.name AS session_name
+      FROM artwork_likes al
+      JOIN sessions s ON s.id = al.session_id
+      WHERE s.creator_user_id = $1 AND al.user_id <> $1
+
+      UNION ALL
+
+      SELECT 'new_artwork' AS type, s.creator_username AS username, s.locked_at AS created_at,
+             s.id AS session_id, s.name AS session_name
+      FROM sessions s
+      WHERE s.state = 'locked' AND s.creator_user_id <> $1
+
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT 20
+    `, [req.user.id]);
+    res.json({ notifications: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1360,6 +1429,11 @@ async function start() {
   // gifts can be routed even after the owner's JWT is gone. Null for artworks
   // generated before this column existed or by owners with no linked wallet.
   await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS owner_pubkey TEXT`);
+  // Provenance of the artwork: 'ai' for machine-generated, 'human' for a
+  // hand-made upload. Every artwork today is produced by /api/generate, so the
+  // default backfills all existing rows to 'ai'. 'human' is supported for a
+  // future human-upload path but nothing writes it yet.
+  await pool.query(`ALTER TABLE generated_artworks ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'ai'`);
   // On-chain gifts/tips sent to artwork owners. Financial data (wallet
   // addresses + amounts) → private: copied schema-only into staging.
   await pool.query(`
@@ -1380,6 +1454,16 @@ async function start() {
     )
   `);
   await pool.query(`COMMENT ON TABLE gifts IS 'staging:private'`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artwork_comments (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL,
+      username VARCHAR(255) NOT NULL,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artwork_likes (
       id SERIAL PRIMARY KEY,
@@ -1405,25 +1489,45 @@ async function start() {
     )
   `);
 
-  // Staging seed: guarantee the Science Zone has at least one science-themed
-  // artwork to browse in PR previews (cloned prod data may not contain any).
-  // No-op in production; idempotent via the fixed demo name.
+  // Staging seeds: populate Stories row, feed grid, and Notifications tab with
+  // demo content from multiple fake users. All idempotent via session name.
+  // No-op in production.
   if (IS_STAGING) {
-    const SEED_NAME = '[demo] Quantum Galaxy';
-    const stagingSeedWords = 'galaxy,quantum,nebula,dna,gravity';
-    const { rows: existing } = await pool.query('SELECT id FROM sessions WHERE name = $1 LIMIT 1', [SEED_NAME]);
-    if (!existing.length) {
-      const { rows: sRows } = await pool.query(
-        `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, locked_at)
-         VALUES ($1, 0, 'demo_scientist', 'locked', $2, NOW()) RETURNING id`,
-        [SEED_NAME, stagingSeedWords]
-      );
-      const sid = sRows[0].id;
-      await pool.query(
-        `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt)
-         VALUES ($1, 0, 'demo_scientist', $2, $3)`,
-        [sid, `https://picsum.photos/seed/sci-${sid}/512/512`, `A beautiful artwork inspired by: ${stagingSeedWords}`]
-      );
+    const DEMO_SESSIONS = [
+      { name: '[demo] Quantum Galaxy',  words: 'galaxy,quantum,nebula,dna,gravity',         user: 'demo_scientist',    uid: -10, minsAgo: 5 },
+      { name: '[demo] Ocean Bloom',     words: 'ocean,bloom,tide,coral,mist',                user: 'staging-demo-alice', uid: -11, minsAgo: 12 },
+      { name: '[demo] Fire Storm',      words: 'fire,storm,ember,thunder,ash',               user: 'staging-demo-bob',  uid: -12, minsAgo: 25 },
+      { name: '[demo] Crystal Cave',    words: 'crystal,obsidian,jade,prism,shadow',         user: 'staging-demo-carol', uid: -13, minsAgo: 45 },
+      { name: '[demo] Cosmic Dust',     words: 'cosmos,star,nebula,spectral,eclipse',        user: 'staging-demo-dave', uid: -14, minsAgo: 80 },
+      { name: '[demo] Desert Mirage',   words: 'desert,mirage,dusk,amber,horizon',           user: 'staging-demo-eve',  uid: -15, minsAgo: 120 },
+    ];
+
+    for (const demo of DEMO_SESSIONS) {
+      const { rows: existing } = await pool.query('SELECT id FROM sessions WHERE name = $1 LIMIT 1', [demo.name]);
+      if (!existing.length) {
+        const lockedAt = new Date(Date.now() - demo.minsAgo * 60 * 1000);
+        const { rows: sRows } = await pool.query(
+          `INSERT INTO sessions (name, creator_user_id, creator_username, state, words, locked_at)
+           VALUES ($1, $2, $3, 'locked', $4, $5) RETURNING id`,
+          [demo.name, demo.uid, demo.user, demo.words, lockedAt]
+        );
+        const sid = sRows[0].id;
+        await pool.query(
+          `INSERT INTO generated_artworks (session_id, owner_user_id, owner_username, image_url, prompt)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [sid, demo.uid, demo.user,
+           `https://picsum.photos/seed/demo-${demo.user}/512/512`,
+           `A beautiful artwork inspired by: ${demo.words}`]
+        );
+        // Seed some likes so heart counts are non-zero
+        const likers = [-21, -22, -23].filter(lid => lid !== demo.uid);
+        for (const lid of likers) {
+          await pool.query(
+            `INSERT INTO artwork_likes (session_id, user_id, username) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [sid, lid, `staging-liker-${Math.abs(lid)}`]
+          );
+        }
+      }
     }
   }
 
