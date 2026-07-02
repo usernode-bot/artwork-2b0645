@@ -292,6 +292,9 @@
       <!-- Locked artwork banner (just generated in this session) -->
       <div id="locked-banner" class="hidden px-4 pt-3"></div>
 
+      <!-- Creative prompt suggestions (for new artwork inspiration) -->
+      <div id="prompt-suggestions" class="px-4 mt-3"></div>
+
       <!-- Stories row -->
       <div id="stories-container" class="px-3 pt-3 pb-1">
         <div id="stories-row" class="inline-flex gap-3 px-1"></div>
@@ -485,6 +488,10 @@
         <p class="text-xs text-zinc-600">Separate words with spaces or commas</p>
         <button id="modal-shuffle" type="button" class="text-xs text-violet-400 hover:text-violet-300 transition-colors font-medium">🎲 Shuffle</button>
       </div>
+      <div class="flex items-center justify-end mb-3">
+        <button id="modal-inspire" type="button"
+          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-violet-300 bg-violet-950/50 border border-violet-800/40 hover:bg-violet-900/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">✨ Inspire me</button>
+      </div>
       <div id="modal-error" class="hidden text-red-400 text-xs mb-3"></div>
       <div class="flex gap-2">
         <button id="modal-cancel" class="btn btn-secondary flex-1">Cancel</button>
@@ -581,6 +588,13 @@ const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
 let wordEditIndex = -1;
 let socket;
+
+// Creative Prompts state
+let promptSuggestions = [];   // cached batch (shared by modal cycling + cards)
+let promptCycleIdx = 0;       // next index for the modal "Inspire me" cycle
+let promptOffset = 0;         // server offset so re-rolls fetch a fresh batch
+let currentPromptId = null;   // id of the suggestion currently filling the modal
+
 let currentTab = 'home';
 const sessionDataMap = new Map(); // id -> session row (for post-detail)
 
@@ -693,6 +707,7 @@ function renderCurrentTab() {
 function renderHome() {
   renderLiveBanner();
   renderLockedBanner();
+  renderPromptCards();
   renderStoriesRow();
   renderFeed();
   renderValidationQueue();
@@ -1521,6 +1536,106 @@ function applyLikeState(btn, liked, count) {
   btn.className = 'like-btn pill ' + (liked ? '!bg-pink-950/50 !border-pink-700/50 !text-pink-300' : '');
 }
 
+// ─── Creative Prompts ───────────────────────────────────────────────────────────
+function promptCardHtml(s) {
+  const chips = (s.words || []).slice(0, 10).map(w =>
+    `<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-violet-950/60 border border-violet-800/40 text-violet-300 mr-1 mb-1">${esc(w)}</span>`
+  ).join('');
+  return `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-left flex flex-col w-full max-w-sm">
+      <p class="font-semibold text-sm text-white mb-1">${esc(s.title || 'Untitled')}</p>
+      <p class="text-xs text-zinc-500 italic mb-3">${esc(s.theme || '')}</p>
+      <div class="flex flex-wrap mb-3 flex-1">${chips}</div>
+      <button type="button" data-prompt-start
+        class="w-full px-3 py-1.5 bg-violet-600 hover:bg-violet-500 rounded-lg text-xs font-medium transition-colors">Start with this</button>
+    </div>`;
+}
+
+// Fetch a single fresh suggestion, advancing the offset so each call re-rolls.
+async function fetchOneSuggestion() {
+  const { suggestions } = await api('GET', `/api/prompts/suggest?count=1&offset=${promptOffset}`);
+  promptOffset += suggestions.length || 1;
+  return suggestions[0] || null;
+}
+
+async function renderPromptCards() {
+  const host = document.getElementById('prompt-suggestions');
+  if (!host) return;
+  try {
+    const { suggestions, basis } = await api('GET', '/api/prompts/suggest?count=1&offset=0');
+    // Seed the modal cycle cache + offset from the same fetch so neither the
+    // "Inspire me" cycle nor a card re-roll fires a redundant first request.
+    promptSuggestions = suggestions;
+    promptCycleIdx = 0;
+    promptOffset = suggestions.length;
+
+    const s = suggestions[0];
+    if (!s) { host.innerHTML = ''; return; }
+
+    const caption = basis && basis.source === 'personal'
+      ? `Based on ${basis.wordsFromHistory} word${basis.wordsFromHistory === 1 ? '' : 's'} from your past sessions`
+      : basis && basis.source === 'popular'
+        ? 'Popular picks to get you started'
+        : 'Fresh ideas to get you started';
+
+    host.innerHTML = `
+      <p class="text-sm font-medium text-zinc-300 mb-1">✨ Creative prompts for you</p>
+      <p class="text-xs text-zinc-600 mb-4">${esc(caption)} · "Start with this" rolls a fresh one</p>
+      <div class="w-full flex justify-center">
+        ${promptCardHtml(s)}
+      </div>`;
+  } catch (err) {
+    console.error('prompts error:', err);
+    host.innerHTML = '';
+  }
+}
+
+// Fill the (already-open) New Session modal with a suggestion and recompute the
+// word counter / Create-button state by dispatching the existing input handler.
+function applySuggestionToModal(s) {
+  if (!s) return;
+  document.getElementById('modal-name').value  = s.title || '';
+  document.getElementById('modal-words').value = (s.words || []).join(' ');
+  currentPromptId = s.id || null;
+  document.getElementById('modal-words').dispatchEvent(new Event('input'));
+}
+
+// Open the New Session modal, optionally pre-filled with a suggestion. Respects
+// the one-active-session rule (no-session-view is hidden while a session is live).
+function openNewSessionModal(suggestion) {
+  if (!!activeSession) return;
+  const modal = document.getElementById('modal');
+  document.getElementById('modal-name').value  = '';
+  document.getElementById('modal-words').value = '';
+  currentPromptId = null;
+  document.getElementById('modal-error').classList.add('hidden');
+  modal.classList.remove('hidden');
+  if (suggestion) applySuggestionToModal(suggestion);
+  document.getElementById('modal-words').dispatchEvent(new Event('input'));
+  setTimeout(() => document.getElementById('modal-name').focus(), 50);
+}
+
+async function handleInspire() {
+  const btn = document.getElementById('modal-inspire');
+  // Cycle through the cached batch; fetch a fresh batch when exhausted.
+  if (promptCycleIdx >= promptSuggestions.length) {
+    const orig = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '✨ Thinking…';
+    try {
+      const { suggestions } = await api('GET', `/api/prompts/suggest?count=3&offset=${promptOffset}`);
+      promptSuggestions = suggestions;
+      promptOffset += suggestions.length;
+      promptCycleIdx = 0;
+    } catch (err) {
+      alert(err.message);
+      return;
+    } finally {
+      btn.disabled = false; btn.innerHTML = orig;
+    }
+  }
+  applySuggestionToModal(promptSuggestions[promptCycleIdx++]);
+}
+
 // ─── Gift helpers ──────────────────────────────────────────────────────────────
 function giftDisabledReason(artwork) {
   if (!artwork || !artwork.owner_pubkey) return "Creator hasn't linked a wallet yet";
@@ -1719,6 +1834,7 @@ function initModal() {
   nameInp.addEventListener('input', updateModalWordCount);
   shuffle.addEventListener('click', () => { wordsInp.value = randomWords(5).join(' '); updateModalWordCount(); });
   document.getElementById('header-create-btn').addEventListener('click', openCreateModal);
+  document.getElementById('modal-inspire').addEventListener('click', handleInspire);
   cancel.addEventListener('click', () => modal.classList.add('hidden'));
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
 
@@ -1730,6 +1846,10 @@ function initModal() {
     create.disabled = true; create.textContent = 'Creating…'; errEl.classList.add('hidden');
     try {
       const { session } = await api('POST', '/api/session', { name, words });
+      if (currentPromptId) {
+        api('POST', `/api/prompts/${currentPromptId}/used`, {}).catch(() => {});
+        currentPromptId = null;
+      }
       activeSession = session; auctionEnded = false;
       modal.classList.add('hidden');
       renderHeader();
@@ -1934,6 +2054,25 @@ async function init() {
     if (copyBtn) { copyShareLink(parseInt(copyBtn.dataset.shareCopy), copyBtn); return; }
     const xBtn = e.target.closest('[data-share-x]');
     if (xBtn) { shareToX(parseInt(xBtn.dataset.shareX), xBtn.dataset.shareTitle); return; }
+  });
+
+  document.getElementById('prompt-suggestions').addEventListener('click', async e => {
+    const btn = e.target.closest('button[data-prompt-start]');
+    if (!btn) return;
+    if (!!activeSession) return; // session active
+    const orig = btn.innerHTML;
+    btn.disabled = true; btn.textContent = 'Generating…';
+    let s;
+    try {
+      // Re-roll a fresh random suggestion rather than reusing the previewed card.
+      s = await fetchOneSuggestion();
+    } catch (err) {
+      alert(err.message);
+      return;
+    } finally {
+      btn.disabled = false; btn.innerHTML = orig;
+    }
+    openNewSessionModal(s || undefined);
   });
 
   // Global share delegation (for share buttons rendered outside post modal if any)
