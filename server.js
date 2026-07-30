@@ -10,7 +10,7 @@ const server = http.createServer(app);
 const io = new Server(server);
 const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const JWT_SECRET = process.env.JWT_SECRET;
+const USERNODE_JWT_PUBLIC_KEY = process.env.USERNODE_JWT_PUBLIC_KEY;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
@@ -26,8 +26,11 @@ app.use(express.json({ limit: '5mb' }));
 
 app.use((req, res, next) => {
   const token = req.query.token || req.headers['x-usernode-token'];
-  if (token && JWT_SECRET) {
-    try { req.user = jwt.verify(token, JWT_SECRET); } catch {}
+  if (token && USERNODE_JWT_PUBLIC_KEY) {
+    try {
+      const payload = jwt.verify(token, USERNODE_JWT_PUBLIC_KEY, { algorithms: ['RS256'], issuer: 'usernode', audience: 'usernode:app:' + process.env.USERNODE_APP_ID });
+      if (payload.pur === 'iframe') req.user = payload;
+    } catch {}
   }
   if (req.method !== 'GET' || req.path.startsWith('/api/')) {
     if (PUBLIC_API_PATHS.has(req.path)) return next();
@@ -40,10 +43,13 @@ app.use((req, res, next) => {
 // Socket.io auth
 io.use((socket, next) => {
   const token = socket.handshake.auth.token || socket.handshake.query.token;
-  if (token && JWT_SECRET) {
+  if (token && USERNODE_JWT_PUBLIC_KEY) {
     try {
-      socket.user = jwt.verify(token, JWT_SECRET);
-      return next();
+      const payload = jwt.verify(token, USERNODE_JWT_PUBLIC_KEY, { algorithms: ['RS256'], issuer: 'usernode', audience: 'usernode:app:' + process.env.USERNODE_APP_ID });
+      if (payload.pur === 'iframe') {
+        socket.user = payload;
+        return next();
+      }
     } catch {}
   }
   next(new Error('Authentication error'));
