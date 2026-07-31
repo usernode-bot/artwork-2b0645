@@ -15,7 +15,7 @@ const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
 
-const PUBLIC_API_PATHS = new Set(['/health']);
+const PUBLIC_API_PATHS = new Set(['/health', '/favicon.ico']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
 // per-artwork share landing page (`GET /a/:id`), which must be reachable
 // by OG/Twitter crawlers that cannot present a platform token. It only
@@ -23,6 +23,8 @@ const PUBLIC_API_PATHS = new Set(['/health']);
 const PUBLIC_PREFIXES = ['/explorer-api/', '/share-api/'];
 
 app.use(express.json({ limit: '5mb' }));
+
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 app.use((req, res, next) => {
   const token = req.query.token || req.headers['x-usernode-token'];
