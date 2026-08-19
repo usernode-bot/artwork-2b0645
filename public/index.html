@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%A8%3C/text%3E%3C/svg%3E">
 
   <script>
   // usernode-dev-console@1
@@ -316,6 +317,7 @@
 // ─── State ────────────────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.search);
 const token  = params.get('token') || '';
+const AUTHED = !!token;
 const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
 
 const CANVAS_BG = '#ffffff';
@@ -324,6 +326,16 @@ const CANVAS_H  = 560;
 const MAX_HISTORY = 50;
 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
+
+// null = not yet known; { configured: bool } once /api/generate/status answers.
+let genStatus = null;
+let genError  = '';
+
+// Screenshot-state deep link. The "auction won → Generate artwork" panel is only
+// reachable by playing a whole session through, so ?shot=generate boots straight
+// into it. Pure client-side UI state — no DB writes — so it renders the same in
+// every environment (which is what lets the "before" screenshot work too).
+const SHOT = params.get('shot');
 
 // drawing state
 let tool        = 'brush';
@@ -349,8 +361,13 @@ async function api(method, path, body) {
   const opts = { method, headers: hdrs() };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res  = await fetch(path, opts);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'Request failed');
+    err.status = res.status;
+    err.code   = data.code;
+    throw err;
+  }
   return data;
 }
 
@@ -645,7 +662,7 @@ async function redo() {
 async function syncSnapshot() {
   if (!activeSession) return;
   const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
-  socket.emit('canvas-snapshot', { sessionId: activeSession.id, dataUrl });
+  socket?.emit('canvas-snapshot', { sessionId: activeSession.id, dataUrl });
 }
 
 // ─── Grid overlay ─────────────────────────────────────────────────────────────
@@ -774,7 +791,7 @@ function mirrorShapeSD(sd) {
 
 function broadcastStroke(sd) {
   if (!activeSession || !socket) return;
-  socket.emit('stroke', { sessionId: activeSession.id, strokeData: sd });
+  socket?.emit('stroke', { sessionId: activeSession.id, strokeData: sd });
 }
 
 // ─── Load + replay ────────────────────────────────────────────────────────────
@@ -790,11 +807,26 @@ async function loadAndReplayStrokes(sessionId) {
   pushHistory();
 }
 
+// The snapshot is the image-to-image CONTROL INPUT for generation, not a
+// thumbnail — it has to carry enough of the drawing for the model to follow it.
+// 512px on the long edge matches the model's working resolution.
+const SNAPSHOT_MAX_EDGE = 512;
+
 function captureCanvasSnapshot() {
+  const scale = SNAPSHOT_MAX_EDGE / Math.max(CANVAS_W, CANVAS_H);
+  const w = Math.round(CANVAS_W * scale);
+  const h = Math.round(CANVAS_H * scale);
   const small = document.createElement('canvas');
-  small.width = 200; small.height = 140;
-  small.getContext('2d').drawImage(canvas, 0, 0, 200, 140);
-  return small.toDataURL('image/jpeg', 0.4);
+  small.width = w; small.height = h;
+  const sctx = small.getContext('2d');
+  // JPEG has no alpha channel — paint the board colour first so any
+  // untouched region encodes as white rather than black.
+  sctx.fillStyle = CANVAS_BG;
+  sctx.fillRect(0, 0, w, h);
+  sctx.imageSmoothingEnabled = true;
+  sctx.imageSmoothingQuality = 'high';
+  sctx.drawImage(canvas, 0, 0, w, h);
+  return small.toDataURL('image/jpeg', 0.85);
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -891,9 +923,19 @@ function renderAuctionPanel() {
 
     let actionHtml = '';
     if (auctionEnded) {
-      actionHtml = isLeader
-        ? `<button id="generate-btn" class="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold">✨ Generate Artwork</button>`
-        : `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
+      if (isLeader) {
+        const unconfigured = genStatus && genStatus.configured === false;
+        const btnClass = unconfigured
+          ? 'w-full px-3 py-2.5 bg-zinc-700 text-zinc-400 rounded-lg text-sm font-semibold cursor-not-allowed'
+          : 'w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold';
+        actionHtml = `
+          <p class="text-xs text-zinc-500 mb-1">Your artwork is generated <span class="text-zinc-300">from this canvas</span> — the drawing guides the image.</p>
+          <button id="generate-btn" class="${btnClass}" ${unconfigured ? 'disabled' : ''}>✨ Generate Artwork</button>
+          ${unconfigured ? `<div id="generate-unconfigured" class="text-xs text-amber-400 bg-amber-900/20 border border-amber-800/50 rounded-lg px-3 py-2">AI image generation is not configured on this deployment yet. An admin needs to set <span class="font-mono">REPLICATE_API_KEY</span> in App secrets.</div>` : ''}
+          <div id="generate-error" class="${genError ? '' : 'hidden'} text-xs text-red-400 bg-red-900/20 border border-red-800/50 rounded-lg px-3 py-2">${genError}</div>`;
+      } else {
+        actionHtml = `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
+      }
     } else if (isLeader) {
       actionHtml = `
         <div class="bg-violet-900/30 border border-violet-700/50 rounded-lg p-3 text-center mb-2">
@@ -967,6 +1009,11 @@ function renderLockedView(data) {
 }
 
 async function renderArchive() {
+  const el0 = document.getElementById('archive-list');
+  if (!AUTHED) {
+    if (el0) el0.innerHTML = '<p class="text-zinc-600 text-sm col-span-full">Sign in through Usernode to see completed sessions.</p>';
+    return;
+  }
   try {
     const { sessions } = await api('GET', '/api/sessions/locked');
     const el = document.getElementById('archive-list');
@@ -1009,24 +1056,61 @@ async function handleBid() {
   }
 }
 
+function showGenerateError(msg) {
+  genError = msg;
+  const el = document.getElementById('generate-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
 async function handleGenerate() {
   const btn = document.getElementById('generate-btn');
+  if (btn && btn.disabled) return;
+
+  if (activeSession && activeSession._shot) {
+    showGenerateError('Preview mode — start a real session and win its auction to generate.');
+    return;
+  }
+
+  showGenerateError('');
   if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
   try {
     const snapshot = captureCanvasSnapshot();
     await api('POST', '/api/generate', { sessionId: activeSession.id, canvasSnapshot: snapshot });
+    // On success the server locks the session and the 'session-locked' socket
+    // event swaps the view — nothing more to do here.
   } catch (err) {
+    // 503 (no API key) and 502 (Replicate error/timeout) both leave the session
+    // in 'auction', so the winner can simply try again.
+    if (err.code === 'generation_unconfigured') {
+      genStatus = { configured: false };
+      renderAuctionPanel();
+      return;
+    }
     if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
-    alert(err.message);
+    showGenerateError(err.message || 'Generation failed. Please try again.');
+  }
+}
+
+async function loadGenerationStatus() {
+  try {
+    genStatus = await api('GET', '/api/generate/status');
+  } catch (e) {
+    genStatus = null; // unknown — leave the button enabled and let the POST decide
   }
 }
 
 // ─── Socket ───────────────────────────────────────────────────────────────────
 function initSocket() {
+  // No user token (screenshot/check container, or a direct visit outside the
+  // platform shell): stay offline rather than opening a socket that can only
+  // be rejected. Every emit site is null-safe.
+  if (!AUTHED) return;
   socket = io({ auth: { token } });
 
   socket.on('connect', () => {
-    if (activeSession) socket.emit('join-session', activeSession.id);
+    if (activeSession) socket?.emit('join-session', activeSession.id);
   });
 
   socket.on('stroke', ({ strokeData }) => { applyStroke(strokeData); });
@@ -1043,7 +1127,7 @@ function initSocket() {
 
   socket.on('session-created', ({ session }) => {
     activeSession = session; auctionEnded = false;
-    socket.emit('join-session', session.id);
+    socket?.emit('join-session', session.id);
     fillCanvasBg(); history=[]; historyIdx=-1; pushHistory();
     renderHeader(); renderMain();
   });
@@ -1147,7 +1231,7 @@ function initToolbar() {
   document.getElementById('clear-btn').addEventListener('click', () => {
     if (!activeSession || activeSession.state !== 'active') return;
     if (!confirm('Clear canvas for everyone?')) return;
-    socket.emit('clear-canvas', activeSession.id);
+    socket?.emit('clear-canvas', activeSession.id);
   });
 
   // Keyboard shortcuts
@@ -1190,13 +1274,70 @@ function initModal() {
       modal.classList.add('hidden');
       fillCanvasBg(); history=[]; historyIdx=-1; pushHistory();
       renderHeader(); renderMain();
-      socket.emit('join-session', session.id);
+      socket?.emit('join-session', session.id);
     } catch (err) {
       errEl.textContent = err.message; errEl.classList.remove('hidden');
     } finally { create.disabled=false; create.textContent='Create'; }
   }
   create.addEventListener('click', doCreate);
   nameInp.addEventListener('keydown', e => { if (e.key==='Enter') doCreate(); });
+}
+
+// ─── Screenshot-state deep link ───────────────────────────────────────────────
+// Draws a fixed sketch so the shot shows a board with content (and so the
+// snapshot the Generate button would send is visibly non-empty). Deterministic:
+// same strokes every run, so before/after shots are comparable.
+function drawDemoSketch() {
+  fillCanvasBg();
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  ctx.strokeStyle = '#111827'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(90, 430); ctx.lineTo(710, 430); ctx.stroke();      // horizon
+
+  ctx.beginPath();                                                                // mountains
+  ctx.moveTo(140, 430); ctx.lineTo(280, 210); ctx.lineTo(400, 430);
+  ctx.moveTo(340, 430); ctx.lineTo(470, 260); ctx.lineTo(600, 430);
+  ctx.stroke();
+
+  ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 6;                                 // sun
+  ctx.beginPath(); ctx.arc(560, 170, 52, 0, Math.PI * 2); ctx.stroke();
+
+  ctx.strokeStyle = '#0ea5e9'; ctx.lineWidth = 4;                                 // water
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(150 + i * 30, 480 + i * 22);
+    ctx.bezierCurveTo(280, 460 + i * 22, 420, 500 + i * 22, 640 - i * 30, 478 + i * 22);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = '#16a34a'; ctx.lineWidth = 5;                                 // tree
+  ctx.beginPath(); ctx.moveTo(180, 430); ctx.lineTo(180, 330); ctx.stroke();
+  ctx.beginPath(); ctx.arc(180, 300, 44, 0, Math.PI * 2); ctx.stroke();
+
+  ctx.restore();
+  history = []; historyIdx = -1;
+  pushHistory();
+}
+
+function applyShotState() {
+  if (SHOT !== 'generate') return false;
+  me = me || { id: 900001, username: 'staging-demo-user', credits: 100 };
+  activeSession = {
+    id: -1,
+    name: 'Staging demo — Sunset Vibes',
+    creator_user_id: me.id,
+    creator_username: me.username,
+    state: 'auction',
+    current_leader_user_id: me.id,
+    current_leader_username: me.username,
+    current_bid: 42,
+    _remaining: 0,
+    _shot: true
+  };
+  auctionEnded = true;
+  drawDemoSketch();
+  return true;
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -1207,13 +1348,31 @@ async function init() {
   initModal();
   initSocket();
 
-  try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
+  if (AUTHED) {
+    try { me = await api('GET', '/api/me'); } catch(e) { console.error('me error:', e); }
+  }
+
+  await loadGenerationStatus();
+
+  if (applyShotState()) {
+    renderHeader();
+    renderMain();
+    renderArchive();
+    return;
+  }
+
+  if (!AUTHED) {
+    renderHeader();
+    renderMain();
+    renderArchive();
+    return;
+  }
 
   try {
     const { session } = await api('GET', '/api/session/active');
     activeSession = session;
     if (activeSession) {
-      socket.emit('join-session', activeSession.id);
+      socket?.emit('join-session', activeSession.id);
       await loadAndReplayStrokes(activeSession.id);
       if (activeSession.state === 'auction' && activeSession.expires_at) {
         if (new Date(activeSession.expires_at) < new Date()) {
