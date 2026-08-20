@@ -31,5 +31,13 @@
       "expectSelector": "#generate-unconfigured",
       "expectText": "not configured on this deployment"
     }
+  ],
+  "tests": [
+    {
+      "name": "Home gallery grid renders with gutters",
+      "path": "/",
+      "expectSelector": "#feed-grid.gallery-grid",
+      "allowConsoleErrors": true
+    }
   ]
 }
