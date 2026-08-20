@@ -212,6 +212,17 @@
       white-space: nowrap; text-align: center;
     }
 
+    /* ── Gallery grid ── */
+    /* 3px gutter between artwork tiles, rows and columns alike, so images
+       never touch. Columns are 1fr each so the gutters come out of the
+       track widths — the grid can't overflow or crop at the edges. */
+    .gallery-grid {
+      gap: 3px;
+      /* Keep the grid inside its container even with the gutters added. */
+      box-sizing: border-box;
+      max-width: 100%;
+    }
+
     /* ── Feed grid cells ── */
     .feed-cell {
       position: relative; display: block; width: 100%;
@@ -291,7 +302,7 @@
       </div>
 
       <!-- Feed grid -->
-      <div id="feed-grid" class="grid grid-cols-3 gap-0.5 mt-1">
+      <div id="feed-grid" class="gallery-grid grid grid-cols-3 mt-1">
         <p class="col-span-3 text-zinc-600 text-sm text-center py-16">Loading…</p>
       </div>
 
@@ -314,7 +325,7 @@
           <option value="oldest">Oldest first</option>
         </select>
       </div>
-      <div id="search-results" class="grid grid-cols-3 gap-0.5">
+      <div id="search-results" class="gallery-grid grid grid-cols-3">
         <p class="col-span-3 text-zinc-600 text-sm text-center py-16">Select a filter to search.</p>
       </div>
     </div>
@@ -343,7 +354,7 @@
           </div>
         </div>
       </div>
-      <div id="profile-grid" class="grid grid-cols-3 gap-0.5 mt-0.5">
+      <div id="profile-grid" class="gallery-grid grid grid-cols-3 mt-0.5">
         <p class="col-span-3 text-zinc-600 text-sm text-center py-16">Loading…</p>
       </div>
     </div>
