@@ -2,10 +2,34 @@
   "secrets": [
     {
       "key": "REPLICATE_API_KEY",
-      "description": "Replicate API key for AI image generation. Sign up free at replicate.com and copy your token from replicate.com/account/api-tokens.",
-      "required": true,
+      "description": "Replicate API token (starts with r8_) used to generate artwork from the whiteboard drawing. Create one at replicate.com/account/api-tokens. Without it, the Generate Artwork button reports that generation is unconfigured instead of producing an image.",
+      "required": false,
       "private": true,
-      "staging_default": "dummy_replicate_key"
+      "staging_default": "staging-no-replicate"
+    },
+    {
+      "key": "REPLICATE_MODEL_VERSION",
+      "description": "Optional override for the pinned Replicate model version hash used for image-to-image generation (jagilley/controlnet-scribble). Only set this if the pinned version is retired upstream.",
+      "required": false,
+      "private": false,
+      "default": "435061a1b5a4c1e26740464bf786efdfa9cb3a3ac488595a2de23e143fdb0117"
+    }
+  ],
+  "tests": [
+    {
+      "name": "App loads",
+      "path": "/"
+    },
+    {
+      "name": "Generate panel renders for the auction winner",
+      "path": "/?shot=generate",
+      "expectSelector": "#generate-btn"
+    },
+    {
+      "name": "Generate reports the unconfigured-AI path (no Replicate key in staging)",
+      "path": "/?shot=generate",
+      "expectSelector": "#generate-unconfigured",
+      "expectText": "not configured on this deployment"
     }
   ]
 }

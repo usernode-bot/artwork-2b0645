@@ -13,9 +13,16 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
+const DRAIN_MS = 3000;
+let shuttingDown = false;
+
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
 
-const PUBLIC_API_PATHS = new Set(['/health', '/favicon.ico']);
+// `/api/generate/status` returns a single boolean — whether an admin has set
+// REPLICATE_API_KEY — and no key material. It is public so the app shell can
+// render the correct Generate-Artwork state (and the platform's screenshot /
+// check containers can load a page) without a user token.
+const PUBLIC_API_PATHS = new Set(['/health', '/favicon.ico', '/api/generate/status']);
 // `/share-api/*` is intentionally public: it backs the unauthenticated
 // per-artwork share landing page (`GET /a/:id`), which must be reachable
 // by OG/Twitter crawlers that cannot present a platform token. It only
@@ -96,6 +103,151 @@ async function handleAuctionEnd(sessionId) {
   } catch (err) {
     console.error('handleAuctionEnd error:', err);
   }
+}
+
+// ─── AI image generation (Replicate, image-to-image) ──────────────────────────
+// The whiteboard drawing is the CONTROL IMAGE, not decoration: the canvas
+// snapshot is fed to a ControlNet-scribble model so the generated artwork
+// follows the strokes people actually drew. Without this the output would be
+// unrelated to the board (the bug this replaced).
+//
+// Model + version are PINNED so a silent upstream change can't alter output.
+// `REPLICATE_MODEL_VERSION` (non-private secret) overrides the pin if Replicate
+// ever retires this version — see dapp.json.
+const REPLICATE_DEFAULT_VERSION = '435061a1b5a4c1e26740464bf786efdfa9cb3a3ac488595a2de23e143fdb0117';
+const REPLICATE_PREDICTIONS_URL = 'https://api.replicate.com/v1/predictions';
+
+// Fixed prompt — there is deliberately no prompt UI; the drawing carries the
+// intent and the prompt only supplies rendering style.
+const GENERATION_PROMPT =
+  'A vibrant, richly detailed digital painting based on this drawing, ' +
+  'expressive colour, dramatic lighting, clean composition, high quality artwork';
+const GENERATION_A_PROMPT = 'best quality, extremely detailed, sharp focus, masterpiece';
+const GENERATION_N_PROMPT =
+  'lowres, bad anatomy, worst quality, low quality, blurry, watermark, text, signature, jpeg artifacts';
+
+const GENERATION_TIMEOUT_MS = 90000; // overall budget for create + poll
+const REPLICATE_REQUEST_TIMEOUT_MS = 20000; // per HTTP call
+const REPLICATE_POLL_INTERVAL_MS = 1500;
+
+// Committed as `staging_default` in dapp.json. Unreviewed staging code must
+// never spend a real Replicate budget, so the sentinel resolves to "not
+// configured" and /api/generate answers 503 — the same code path production
+// takes when no key has been set yet.
+const REPLICATE_STAGING_SENTINEL = 'staging-no-replicate';
+
+// A blank white 64x64 PNG. Used only when the request carries no usable
+// snapshot (JS failed before capture) so the model still gets a valid control
+// image instead of the endpoint 500-ing.
+const BLANK_CONTROL_IMAGE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PMQ0AAAwDoPo33UrYvQQckD4XAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAYHLAMpT0sIcNbcEAAAAAElFTkSuQmCC';
+
+/** Resolved Replicate key, or null when generation is not usable here. */
+function replicateApiKey() {
+  const key = (process.env.REPLICATE_API_KEY || '').trim();
+  if (!key || key === REPLICATE_STAGING_SENTINEL) return null;
+  return key;
+}
+
+function replicateModelVersion() {
+  return (process.env.REPLICATE_MODEL_VERSION || '').trim() || REPLICATE_DEFAULT_VERSION;
+}
+
+/** Accept only a reasonably-sized raster data URL as the control image. */
+function usableSnapshot(snapshot) {
+  if (typeof snapshot !== 'string') return null;
+  if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(snapshot)) return null;
+  if (snapshot.length < 128 || snapshot.length > 4 * 1024 * 1024) return null;
+  return snapshot;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function replicateJson(url, { method = 'GET', body, extraHeaders } = {}, apiKey) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REPLICATE_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...(extraHeaders || {})
+      },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    const text = await res.text();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch { /* non-JSON error body */ }
+    if (!res.ok) {
+      const detail = (parsed && (parsed.detail || parsed.error)) || text.slice(0, 200);
+      throw new Error(`Replicate HTTP ${res.status}: ${detail}`);
+    }
+    if (!parsed) throw new Error('Replicate returned a non-JSON response');
+    return parsed;
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('Replicate request timed out');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Turn the whiteboard snapshot into a generated artwork URL.
+ * Throws on any upstream failure/timeout — the caller maps that to 502 and
+ * leaves the session unlocked so the winner can retry.
+ */
+async function generateFromSnapshot(canvasSnapshot, apiKey) {
+  const controlImage = usableSnapshot(canvasSnapshot) || BLANK_CONTROL_IMAGE;
+  const deadline = Date.now() + GENERATION_TIMEOUT_MS;
+
+  let prediction = await replicateJson(
+    REPLICATE_PREDICTIONS_URL,
+    {
+      method: 'POST',
+      // `wait` lets fast predictions come back on the create call, so the poll
+      // loop below is usually a no-op.
+      extraHeaders: { Prefer: 'wait' },
+      body: {
+        version: replicateModelVersion(),
+        input: {
+          image: controlImage,
+          prompt: GENERATION_PROMPT,
+          a_prompt: GENERATION_A_PROMPT,
+          n_prompt: GENERATION_N_PROMPT,
+          num_samples: '1',
+          image_resolution: '512',
+          detect_resolution: 512,
+          ddim_steps: 20,
+          scale: 9,
+          eta: 0
+        }
+      }
+    },
+    apiKey
+  );
+
+  while (prediction.status === 'starting' || prediction.status === 'processing') {
+    if (Date.now() > deadline) throw new Error('Image generation timed out');
+    await sleep(REPLICATE_POLL_INTERVAL_MS);
+    const pollUrl = prediction.urls?.get || `${REPLICATE_PREDICTIONS_URL}/${prediction.id}`;
+    prediction = await replicateJson(pollUrl, {}, apiKey);
+  }
+
+  if (prediction.status !== 'succeeded') {
+    throw new Error(`Prediction ${prediction.status}: ${prediction.error || 'no detail'}`);
+  }
+
+  // ControlNet models return [control_map, generated_image]; plain img2img
+  // returns [generated_image]. The last entry is the artwork either way.
+  const output = prediction.output;
+  const imageUrl = Array.isArray(output) ? output[output.length - 1] : output;
+  if (typeof imageUrl !== 'string' || !/^https?:\/\//.test(imageUrl)) {
+    throw new Error('Prediction succeeded but returned no image URL');
+  }
+  return imageUrl;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -389,7 +541,12 @@ function isScienceArtwork(wordsStr) {
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/favicon.ico', (_req, res) => res.status(204).end());
+
+app.get('/health', (_req, res) => {
+  if (shuttingDown) return res.status(503).json({ status: 'shutting_down' });
+  res.json({ status: 'ok' });
+});
 
 app.get('/api/me', async (req, res) => {
   try {
@@ -744,6 +901,12 @@ app.post('/api/bid', async (req, res) => {
   }
 });
 
+// Lets the client render the Generate button in its real state (and explain
+// itself) instead of only discovering the problem after a failed click.
+app.get('/api/generate/status', (_req, res) => {
+  res.json({ configured: !!replicateApiKey() });
+});
+
 app.post('/api/session/:id/change-word', async (req, res) => {
   const client = await pool.connect();
   try {
@@ -865,7 +1028,7 @@ app.post('/api/session/:id/change-word', async (req, res) => {
 
 app.post('/api/generate', async (req, res) => {
   try {
-    const { sessionId } = req.body;
+    const { sessionId, canvasSnapshot } = req.body;
 
     const { rows: sessions } = await pool.query(
       `SELECT * FROM sessions WHERE id = $1 AND state = 'auction'`,
@@ -886,6 +1049,16 @@ app.post('/api/generate', async (req, res) => {
       return res.status(409).json({ error: 'Auction has not ended yet' });
     }
 
+    const apiKey = replicateApiKey();
+    if (!apiKey) {
+      // Nothing is written and the session stays in 'auction', so the winner
+      // can hit Generate again once a key is set.
+      return res.status(503).json({
+        error: 'AI image generation is not configured on this deployment yet.',
+        code: 'generation_unconfigured'
+      });
+    }
+
     const wordsStr = session.words || '';
     // Build the prompt from the session's comma-joined words. Guard against an
     // all-whitespace `words` value with a generic fallback so we never send an
@@ -895,21 +1068,16 @@ app.post('/api/generate', async (req, res) => {
       ? `A beautiful artwork inspired by: ${cleanWords.join(', ')}`
       : 'A beautiful abstract artwork';
 
-    // Real generation when a key is configured; otherwise fall back to the
-    // picsum stub so the app still works locally without a Replicate key.
     let imageUrl;
-    if (REPLICATE_API_KEY) {
-      try {
-        imageUrl = await generateImageWithReplicate(prompt);
-      } catch (err) {
-        // Leave the session in `auction` state so the winner can retry. We have
-        // not locked the session or written any row yet, so this is recoverable.
-        console.error('Replicate generation failed:', err.message);
-        return res.status(502).json({ error: 'Image generation failed, please try again' });
-      }
-    } else {
-      console.warn('REPLICATE_API_KEY not set — using picsum stub for artwork generation');
-      imageUrl = `https://picsum.photos/seed/${sessionId}/512/512`;
+    try {
+      imageUrl = await generateFromSnapshot(canvasSnapshot, apiKey);
+    } catch (err) {
+      console.error('[generate] Replicate failed for session', sessionId, '-', err.message);
+      // Same deal: no insert, no lock, session remains retryable.
+      return res.status(502).json({
+        error: 'Image generation failed. Please try again.',
+        code: 'generation_failed'
+      });
     }
 
     // Only persist + lock + broadcast once we have a real image URL in hand.
@@ -1551,5 +1719,26 @@ async function start() {
 
   server.listen(port, () => console.log(`Listening on :${port}`));
 }
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received, draining`);
+  clearAuctionTimer();
+  server.close(() => {});
+  server.closeIdleConnections?.();
+  const t = setTimeout(() => server.closeAllConnections?.(), DRAIN_MS);
+  t.unref?.();
+  try {
+    await pool.end();
+  } catch (e) {
+    console.error('[shutdown] pool.end failed', e.message);
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 start().catch(err => { console.error(err); process.exit(1); });

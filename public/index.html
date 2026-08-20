@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%A8%3C/text%3E%3C/svg%3E">
 
   <script>
   // usernode-dev-console@1
@@ -534,11 +535,22 @@
 // ─── Constants & state ────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.search);
 const token  = params.get('token') || '';
+const AUTHED = !!token;
 const hdrs   = () => ({ 'Content-Type': 'application/json', 'x-usernode-token': token });
 
 let me = null, activeSession = null, auctionEnded = false, lockedSessionData = null;
 let wordEditIndex = -1;
 let socket;
+
+// null = not yet known; { configured: bool } once /api/generate/status answers.
+let genStatus = null;
+let genError  = '';
+
+// Screenshot-state deep link. The "auction won → Generate artwork" panel is only
+// reachable by playing a whole session through, so ?shot=generate boots straight
+// into it. Pure client-side UI state — no DB writes — so it renders the same in
+// every environment (which is what lets the "before" screenshot work too).
+const SHOT = params.get('shot');
 
 // Creative Prompts state
 let promptSuggestions = [];   // cached batch (shared by modal cycling + cards)
@@ -554,8 +566,13 @@ async function api(method, path, body) {
   const opts = { method, headers: hdrs() };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res  = await fetch(path, opts);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'Request failed');
+    err.status = res.status;
+    err.code   = data.code;
+    throw err;
+  }
   return data;
 }
 
@@ -1014,9 +1031,19 @@ function renderAuctionPanel() {
 
     let actionHtml = '';
     if (auctionEnded) {
-      actionHtml = isLeader
-        ? `<button id="generate-btn" class="w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold">✨ Generate Artwork</button>`
-        : `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
+      if (isLeader) {
+        const unconfigured = genStatus && genStatus.configured === false;
+        const btnClass = unconfigured
+          ? 'w-full px-3 py-2.5 bg-zinc-700 text-zinc-400 rounded-lg text-sm font-semibold cursor-not-allowed'
+          : 'w-full px-3 py-2.5 bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500 rounded-lg text-sm font-semibold';
+        actionHtml = `
+          <p class="text-xs text-zinc-500 mb-1">Your artwork is generated <span class="text-zinc-300">from this canvas</span> — the drawing guides the image.</p>
+          <button id="generate-btn" class="${btnClass}" ${unconfigured ? 'disabled' : ''}>✨ Generate Artwork</button>
+          ${unconfigured ? `<div id="generate-unconfigured" class="text-xs text-amber-400 bg-amber-900/20 border border-amber-800/50 rounded-lg px-3 py-2">AI image generation is not configured on this deployment yet. An admin needs to set <span class="font-mono">REPLICATE_API_KEY</span> in App secrets.</div>` : ''}
+          <div id="generate-error" class="${genError ? '' : 'hidden'} text-xs text-red-400 bg-red-900/20 border border-red-800/50 rounded-lg px-3 py-2">${genError}</div>`;
+      } else {
+        actionHtml = `<div class="text-center py-2 text-sm text-zinc-400">🎉 <span class="text-violet-300 font-medium">@${activeSession.current_leader_username}</span> won!</div>`;
+      }
     } else if (isLeader) {
       actionHtml = `
         <div class="bg-violet-900/30 border border-violet-700/50 rounded-lg p-3 text-center mb-2">
@@ -1409,14 +1436,47 @@ async function handleBid() {
   }
 }
 
+function showGenerateError(msg) {
+  genError = msg;
+  const el = document.getElementById('generate-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
 async function handleGenerate() {
   const btn = document.getElementById('generate-btn');
+  if (btn && btn.disabled) return;
+
+  if (activeSession && activeSession._shot) {
+    showGenerateError('Preview mode — start a real session and win its auction to generate.');
+    return;
+  }
+
+  showGenerateError('');
   if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
   try {
     await api('POST', '/api/generate', { sessionId: activeSession.id });
+    // On success the server locks the session and the 'session-locked' socket
+    // event swaps the view — nothing more to do here.
   } catch (err) {
+    // 503 (no API key) and 502 (Replicate error/timeout) both leave the session
+    // in 'auction', so the winner can simply try again.
+    if (err.code === 'generation_unconfigured') {
+      genStatus = { configured: false };
+      renderAuctionPanel();
+      return;
+    }
     if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Artwork'; }
-    alert(err.message);
+    showGenerateError(err.message || 'Generation failed. Please try again.');
+  }
+}
+
+async function loadGenerationStatus() {
+  try {
+    genStatus = await api('GET', '/api/generate/status');
+  } catch (e) {
+    genStatus = null; // unknown — leave the button enabled and let the POST decide
   }
 }
 
@@ -1537,10 +1597,14 @@ function initModal() {
 
 // ─── Socket ───────────────────────────────────────────────────────────────────
 function initSocket() {
+  // No user token (screenshot/check container, or a direct visit outside the
+  // platform shell): stay offline rather than opening a socket that can only
+  // be rejected. Every emit site is null-safe.
+  if (!AUTHED) return;
   socket = io({ auth: { token } });
 
   socket.on('connect', () => {
-    if (activeSession) socket.emit('join-session', activeSession.id);
+    if (activeSession) socket?.emit('join-session', activeSession.id);
   });
 
   socket.on('session-created', ({ session }) => {
@@ -1620,11 +1684,39 @@ function initSocket() {
   });
 }
 
+// ─── Screenshot-state deep link ───────────────────────────────────────────────
+function applyShotState() {
+  if (SHOT !== 'generate') return false;
+  me = me || { id: 900001, username: 'staging-demo-user', credits: 100 };
+  activeSession = {
+    id: -1,
+    name: 'Staging demo — Sunset Vibes',
+    creator_user_id: me.id,
+    creator_username: me.username,
+    state: 'auction',
+    current_leader_user_id: me.id,
+    current_leader_username: me.username,
+    current_bid: 42,
+    words: 'sunset,ocean,ember,drift,glow',
+    _remaining: 0,
+    _shot: true
+  };
+  auctionEnded = true;
+  return true;
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   initModal();
   initLightbox();
   initSocket();
+
+  await loadGenerationStatus();
+  if (applyShotState()) {
+    renderHeader();
+    openSessionOverlay();
+    return;
+  }
 
   // Bottom nav tab switching
   document.getElementById('bottom-nav').addEventListener('click', e => {
