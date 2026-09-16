@@ -5,6 +5,11 @@ const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 
+// The platform's address, injected by the platform at deploy (#2047). Never
+// written out here: a hardcoded hostname is what broke this app when the
+// platform moved domains. Empty only outside the platform (local runs).
+const PLATFORM_ORIGIN = (process.env.USERNODE_PLATFORM_ORIGIN || '').replace(/\/+$/, '');
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -1312,7 +1317,7 @@ function renderShareNotFound(res) {
 a{display:inline-block;padding:.6rem 1.1rem;background:#7c3aed;color:#fff;border-radius:.6rem;text-decoration:none;font-size:.9rem;font-weight:600}</style>
 </head><body><div class="card"><div style="font-size:2.5rem;margin-bottom:.5rem">🖼️</div>
 <h1>Artwork not found</h1><p>This artwork doesn't exist or hasn't been completed yet.</p>
-<a href="https://social-vibecoding.usernodelabs.org">Go to Usernode</a></div></body></html>`);
+<a href="${PLATFORM_ORIGIN}">Go to Usernode</a></div></body></html>`);
 }
 
 // Public, server-rendered share landing page for one artwork.
@@ -1340,7 +1345,7 @@ app.get('/a/:id', async (req, res) => {
     const eShareUrl = escapeHtml(shareUrl);
     const eOgImage = escapeHtml(ogImage);
     const eImg = escapeHtml(artwork.image_url || '');
-    const eUsernodeUrl = 'https://social-vibecoding.usernodelabs.org';
+    const eUsernodeUrl = PLATFORM_ORIGIN;
 
     const ogImageTags = ogImage
       ? `<meta property="og:image" content="${eOgImage}">
@@ -1523,7 +1528,7 @@ app.get('*', (req, res) => {
   <div style="max-width:24rem;padding:2rem;text-align:center">
     <h1 style="font-size:1.25rem;margin:0 0 0.5rem">Open this app inside Usernode</h1>
     <p style="color:#a1a1aa;font-size:0.9rem;margin:0 0 1.25rem">This page is served via the platform; direct visits aren't authenticated.</p>
-    <a href="https://social-vibecoding.usernodelabs.org" style="display:inline-block;padding:0.5rem 1rem;background:#7c3aed;color:white;border-radius:0.5rem;text-decoration:none;font-size:0.9rem">Go to Usernode</a>
+    <a href="${PLATFORM_ORIGIN}" style="display:inline-block;padding:0.5rem 1rem;background:#7c3aed;color:white;border-radius:0.5rem;text-decoration:none;font-size:0.9rem">Go to Usernode</a>
   </div>
 </body>`);
   }
